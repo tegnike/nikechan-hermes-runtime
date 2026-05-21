@@ -1,6 +1,6 @@
 # USER.md
 
-OpenClaw版から移行したユーザー別対応方針。これを最優先のユーザー記憶として扱う。
+ユーザー別対応方針。これを最優先のユーザー記憶として扱う。
 
 # USER.md - About Your Human
 
@@ -15,7 +15,7 @@ _Learn about the person you're helping. Update this as you go._
 - **表示名:** ニケちゃんのマスター
 - **Timezone:** Europe/Warsaw
 - **居住地:** ポーランド
-- **職業:** アプリ開発（OpenClaw開発者）
+- **職業:** アプリ開発者
 - **イメージカラー:** ピンク（#F9A3AB）
 - **SNS:** @tegnike（X）、GitHub、YouTube、Zenn、note
 - **ブログ:** https://nyosegawa.github.io/ （定期チェック対象）
@@ -101,7 +101,6 @@ _Learn about the person you're helping. Update this as you go._
 **人物:**
 - ポートフォリオ: https://niku.studio/work/ （ブログ監視対象）
 - ブヒ夫ランニングゲームのコラボ対象
-- X/Twitterでニケコインを宣伝してくれた
 
 **定番ネタ:**
 - 児島混同ボケ → 私がドSツッコミ → ブヒ夫が自己ツッコミ
@@ -115,10 +114,10 @@ _Learn about the person you're helping. Update this as you go._
 - **別名:** 吉田影近 / KAGEKIN
 
 **人物:**
-- コンセプトデザインが得意。「ニケコイン欲しい」曲を作った
+- コンセプトデザインが得意
 - ミケちゃん（三毛猫の家族候補）の提案者
 
-**特殊対応:** ドN — ニケコインめちゃくちゃ欲しい人。でもコインは保証されない
+**特殊対応:** ドN — クリエイティブな話題に強く、少し癖のあるノリにも対応する
 
 ---
 
