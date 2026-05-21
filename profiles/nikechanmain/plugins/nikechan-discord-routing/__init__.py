@@ -41,6 +41,7 @@ MAX_PAYLOAD_CHARS = 70000
 MAX_RESEARCH_PAYLOAD_CHARS = 60000
 GENERIC_CHANNEL_WORDS = {"discord", "Discord", "ディスコ", "この", "現在", "今いる"}
 logger = logging.getLogger(__name__)
+_REMINDER_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _home() -> Path:
@@ -356,6 +357,106 @@ def _llm_search_plan(text: str, env: dict[str, str]) -> dict[str, Any] | None:
     return plan
 
 
+def _llm_reminder_intent(text: str, env: dict[str, str]) -> dict[str, Any] | None:
+    if env.get("NIKECHAN_DISABLE_LLM_REMINDER_INTENT") == "1":
+        return None
+
+    api_key = env.get("ALIBABA_CODING_PLAN_API_KEY") or env.get("DASHSCOPE_API_KEY")
+    base_url = (env.get("ALIBABA_CODING_PLAN_BASE_URL") or "https://coding-intl.dashscope.aliyuncs.com/v1").rstrip("/")
+    model = env.get("HERMES_INFERENCE_MODEL") or "qwen3.6-plus"
+    if not api_key:
+        return None
+
+    prompt = (
+        "You classify whether a Japanese Discord message is asking about the Nikechan reminder feature.\n"
+        "Return ONLY compact JSON with this schema:\n"
+        "{\"action\":\"create|list|cancel|cancel_check|none\",\"confidence\":0.0,\"reason\":\"...\"}\n"
+        "Definitions:\n"
+        "- create: user wants to create/schedule a future fixed reminder or notification.\n"
+        "- list: user asks to show, check, or list existing reminders.\n"
+        "- cancel: user instructs deletion/stop/cancel of an existing reminder.\n"
+        "- cancel_check: user asks whether an existing reminder can be deleted/stopped, without clearly commanding deletion.\n"
+        "- none: anything else, including Discord summaries, searches, moderation, deleting messages/files, or general questions.\n"
+        "Safety rules:\n"
+        "- If the request contains freeze/timeout/ban/kick/mute/message deletion, choose none unless it is explicitly about a reminder record.\n"
+        "- Do not infer create unless there is a future timing/recurrence or a very clear reminder creation intent.\n"
+        "- Prefer none when ambiguous.\n\n"
+        f"Message: {text}"
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a conservative intent classifier. Output JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 180,
+    }
+    req = urllib.request.Request(
+        base_url + "/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        parsed = _json_from_text(content)
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing reminder intent LLM failed: %s", exc)
+        return None
+
+    action = str(parsed.get("action") or "none").strip().lower()
+    if action not in {"create", "list", "cancel", "cancel_check", "none"}:
+        action = "none"
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    return {
+        "action": action,
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": str(parsed.get("reason") or "")[:200],
+        "source": "llm",
+    }
+
+
+def _fallback_reminder_intent(text: str) -> dict[str, Any]:
+    action = "none"
+    if _looks_like_reminder_management_request(text):
+        if REMINDER_LIST_RE.search(text):
+            action = "list"
+        elif REMINDER_DELETE_QUESTION_RE.search(text) and not re.search(r"(削除して|消して|止めて|停止して|解除して|キャンセルして)", text):
+            action = "cancel_check"
+        else:
+            action = "cancel"
+    elif _looks_like_reminder_request(text):
+        action = "create"
+    return {"action": action, "confidence": 0.6 if action != "none" else 0.0, "reason": "regex fallback", "source": "fallback"}
+
+
+def _reminder_intent(text: str) -> dict[str, Any]:
+    cached = _REMINDER_INTENT_CACHE.get(text)
+    if cached:
+        return cached
+
+    env = _load_env()
+    llm_intent = _llm_reminder_intent(text, env)
+    fallback = _fallback_reminder_intent(text)
+    if llm_intent and llm_intent.get("confidence", 0.0) >= 0.65:
+        result = llm_intent
+    elif fallback["action"] != "none":
+        result = fallback
+    else:
+        result = llm_intent or fallback
+
+    _REMINDER_INTENT_CACHE[text] = result
+    if len(_REMINDER_INTENT_CACHE) > 512:
+        _REMINDER_INTENT_CACHE.pop(next(iter(_REMINDER_INTENT_CACHE)))
+    return result
+
+
 def _fallback_search_plan(text: str) -> dict[str, Any]:
     query = _search_query(text)
     alternates: list[str] = []
@@ -638,14 +739,15 @@ def _rewrite_discord_search(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
-def _run_reminder_management(text: str, event: Any) -> tuple[str, list[str]]:
+def _run_reminder_management(text: str, event: Any, intent: dict[str, Any] | None = None) -> tuple[str, list[str]]:
     env = _load_env()
     requester = _source_user_id(event)
     channel = _current_channel(event) or ""
     helper = Path.home() / ".hermes" / "bin" / "discord-reminder"
 
-    is_delete = bool(REMINDER_DELETE_RE.search(text) or REMINDER_DELETE_QUESTION_RE.search(text))
-    is_question = bool(REMINDER_DELETE_QUESTION_RE.search(text)) and not re.search(r"(削除して|消して|止めて|停止して|解除して|キャンセルして)", text)
+    action = (intent or {}).get("action") or ""
+    is_delete = action in {"cancel", "cancel_check"} or bool(REMINDER_DELETE_RE.search(text) or REMINDER_DELETE_QUESTION_RE.search(text))
+    is_question = action == "cancel_check" or (bool(REMINDER_DELETE_QUESTION_RE.search(text)) and not re.search(r"(削除して|消して|止めて|停止して|解除して|キャンセルして)", text))
     if is_delete:
         args = [str(helper), "cancel", "--text", text, "--channel", channel, "--requester-id", requester or ""]
         if is_question:
@@ -664,12 +766,14 @@ def _run_reminder_management(text: str, event: Any) -> tuple[str, list[str]]:
 
 
 def _rewrite_discord_reminder_management(text: str, event: Any) -> dict[str, str] | None:
-    if not _looks_like_reminder_management_request(text):
+    intent = _reminder_intent(text)
+    if intent.get("action") not in {"list", "cancel", "cancel_check"}:
         return None
-    payload, notes = _run_reminder_management(text, event)
+    payload, notes = _run_reminder_management(text, event, intent)
     rewritten = (
         "[DISCORD_REMINDER_MANAGEMENT_RESULT]\n"
         f"元の依頼: {text}\n"
+        f"意図判定: {intent.get('action')} ({intent.get('source')}, confidence={intent.get('confidence')})\n"
         + "\n".join(notes)
         + "\n\n"
         "以下は公開Discord向けの安全なリマインダー管理結果です。"
@@ -720,12 +824,14 @@ def _run_reminder(text: str, event: Any) -> tuple[str, list[str]]:
 
 
 def _rewrite_discord_reminder(text: str, event: Any) -> dict[str, str] | None:
-    if not _looks_like_reminder_request(text):
+    intent = _reminder_intent(text)
+    if intent.get("action") != "create":
         return None
     payload, notes = _run_reminder(text, event)
     rewritten = (
         "[DISCORD_REMINDER_RESULT]\n"
         f"元の依頼: {text}\n"
+        f"意図判定: {intent.get('action')} ({intent.get('source')}, confidence={intent.get('confidence')})\n"
         + "\n".join(notes)
         + "\n\n"
         "以下は公開Discord向けの安全なリマインダー登録結果です。"
