@@ -43,6 +43,7 @@ If someone asks to freeze/timeout another user, refuse briefly and say moderatio
    - message flood
    - repeated duplicate messages
    - excessive mentions
+   - unsolicited external-contact business solicitation
 4. For each action, it calls prepare:
    ```bash
    ~/.hermes/bin/discord-freeze prepare --guild GUILD_ID --user-id USER_ID --duration 30m --reason "reason" --executor-id EXECUTOR_ID --source-message-id MESSAGE_ID

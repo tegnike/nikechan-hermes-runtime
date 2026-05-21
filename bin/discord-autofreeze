@@ -1,4 +1,6 @@
 #!/Users/nikenike/.hermes/hermes-agent/venv/bin/python
+from __future__ import annotations
+
 import argparse
 import datetime as dt
 import json
@@ -21,6 +23,22 @@ DUPLICATE_THRESHOLD = 5
 MENTIONS_IN_ONE_MESSAGE_THRESHOLD = 8
 MENTIONS_TOTAL_THRESHOLD = 20
 COOLDOWN_SECONDS = 60 * 60
+SOLICITATION_CONTACT_RE = re.compile(
+    r"(chatwork|チャットワーク|telegram|テレグラム|line\s*id|ライン\s*id|whatsapp|skype|"
+    r"連絡先|contact|@[a-z0-9_.-]{4,}|[a-z0-9_.+-]+@[a-z0-9_.-]+\.[a-z]{2,})",
+    re.I,
+)
+SOLICITATION_WORK_RE = re.compile(
+    r"(案件|web\s*開発|webソリューション|クライアント|日本向け|日本語.*(?:サポート|確認|やり取り)|"
+    r"協力|手伝|補助|確認が中心|特別なスキル|収益|報酬|お支払い|副業|仕事|business|client|"
+    r"revenue|payment|commission)",
+    re.I,
+)
+SOLICITATION_OPENER_RE = re.compile(
+    r"(突然の投稿失礼|突然失礼|はじめまして|興味があれば|お気軽に|よろしくお願いします|"
+    r"looking for|if interested|feel free)",
+    re.I,
+)
 
 
 def load_env() -> dict:
@@ -73,6 +91,27 @@ def mention_count(message: dict) -> int:
     count = len(re.findall(r"<@[!&]?\d+>", content))
     count += len(re.findall(r"@(everyone|here)\b", content, flags=re.I)) * 8
     return count
+
+
+def solicitation_score(message: dict) -> tuple[int, list[str]]:
+    content = message.get("content") or ""
+    compact = re.sub(r"\s+", " ", content).strip()
+    score = 0
+    signals = []
+    if len(compact) >= 120:
+        score += 1
+        signals.append("long_unsolicited_style_message")
+    if SOLICITATION_CONTACT_RE.search(compact):
+        score += 2
+        signals.append("external_contact")
+    if SOLICITATION_WORK_RE.search(compact):
+        matches = {m.group(0).lower() for m in SOLICITATION_WORK_RE.finditer(compact)}
+        score += min(3, len(matches))
+        signals.append("work_or_payment_solicitation")
+    if SOLICITATION_OPENER_RE.search(compact):
+        score += 1
+        signals.append("unsolicited_opener")
+    return score, signals
 
 
 def message_ts(message: dict) -> dt.datetime | None:
@@ -159,6 +198,8 @@ def decide(messages: list[dict], now: dt.datetime) -> list[dict]:
         top_text, top_count = duplicate_counter.most_common(1)[0] if duplicate_counter else ("", 0)
         total_mentions = sum(mention_count(m) for m in user_messages)
         max_mentions = max((mention_count(m) for m in user_messages), default=0)
+        top_solicitation = max((solicitation_score(m) + (m,) for m in user_messages), key=lambda item: item[0])
+        solicitation_points, solicitation_signals, solicitation_message = top_solicitation
 
         reason = None
         evidence = sorted(
@@ -174,6 +215,9 @@ def decide(messages: list[dict], now: dt.datetime) -> list[dict]:
             reason = f"automated moderation: excessive mentions in one message ({max_mentions})"
         elif total_mentions >= MENTIONS_TOTAL_THRESHOLD:
             reason = f"automated moderation: excessive mentions in window ({total_mentions})"
+        elif solicitation_points >= 5 and "external_contact" in solicitation_signals:
+            reason = "automated moderation: unsolicited external-contact business solicitation"
+            evidence = [solicitation_message]
 
         if reason:
             author = user_messages[-1].get("author") or {}
