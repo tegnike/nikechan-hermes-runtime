@@ -15,6 +15,7 @@ API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 UPLOAD_BASE = "https://generativelanguage.googleapis.com/upload/v1beta/files"
 DEFAULT_MODEL = "gemini-3.5-flash"
 INLINE_LIMIT = 18 * 1024 * 1024
+SUNO_SONG_RE = __import__("re").compile(r"https?://(?:www\.)?suno\.com/song/([0-9a-fA-F-]{32,36})(?:[/?#][^\s<>\"]*)?", __import__("re").IGNORECASE)
 
 
 def load_env() -> dict:
@@ -48,6 +49,49 @@ def load_env() -> dict:
     return env
 
 
+def _extract_meta_content(html_text: str, name: str) -> str | None:
+    import html as html_lib
+    import re
+    pattern = r'<meta[^>]+(?:property|name)=["\']' + re.escape(name) + r'["\'][^>]+content=["\']([^"\']+)'
+    m = re.search(pattern, html_text, re.IGNORECASE)
+    return html_lib.unescape(m.group(1)) if m else None
+
+
+def resolve_suno_url(url: str) -> dict:
+    import html as html_lib
+    import re
+    match = SUNO_SONG_RE.search(url)
+    if not match:
+        return {"url": url}
+    song_id = match.group(1)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; nikechan-gemini-audio-analyze/1.0)"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        html_text = resp.read(2_000_000).decode("utf-8", errors="replace")
+    candidates = []
+    for pattern in (
+        r'audio_url\\?"\\s*:\\s*\\?"([^"\\]+)',
+        r'https?:\\/\\/cdn[0-9a-z.-]*\\.suno\\.ai\\/[^"<>\\]+?\\.mp3',
+        r'https?://cdn[0-9a-z.-]*\.suno\.ai/[^"<>]+?\.mp3',
+    ):
+        for raw in re.findall(pattern, html_text, re.IGNORECASE):
+            value = raw if isinstance(raw, str) else raw[0]
+            value = value.replace("\\/", "/")
+            value = html_lib.unescape(value)
+            if value.startswith("//"):
+                value = "https:" + value
+            if value.startswith("http") and value not in candidates:
+                candidates.append(value)
+    audio_url = next((u for u in candidates if song_id in u), candidates[0] if candidates else f"https://cdn1.suno.ai/{song_id}.mp3")
+    return {
+        "url": audio_url,
+        "page_url": url,
+        "title": _extract_meta_content(html_text, "og:title"),
+        "description": _extract_meta_content(html_text, "og:description"),
+        "image": _extract_meta_content(html_text, "twitter:image") or _extract_meta_content(html_text, "og:image"),
+        "song_id": song_id,
+    }
+
+
 def mime_for(path: Path, fallback: str | None = None) -> str:
     if fallback:
         return fallback
@@ -75,20 +119,22 @@ def request_json(url: str, api_key: str, payload: dict, timeout: int = 180) -> d
         raise RuntimeError(f"Gemini API HTTP {exc.code}: {body[:1000]}") from exc
 
 
-def download_url(url: str) -> Path:
-    parsed = urllib.parse.urlparse(url)
+def download_url(url: str) -> tuple[Path, dict]:
+    resolved = resolve_suno_url(url)
+    media_url = resolved["url"]
+    parsed = urllib.parse.urlparse(media_url)
     suffix = Path(parsed.path).suffix or ".bin"
     fd, name = tempfile.mkstemp(prefix="nikechan-audio-", suffix=suffix)
     os.close(fd)
     path = Path(name)
-    req = urllib.request.Request(url, headers={"User-Agent": "nikechan-gemini-audio-analyze/1.0"})
-    with urllib.request.urlopen(req, timeout=60) as resp, path.open("wb") as out:
+    req = urllib.request.Request(media_url, headers={"User-Agent": "nikechan-gemini-audio-analyze/1.0"})
+    with urllib.request.urlopen(req, timeout=90) as resp, path.open("wb") as out:
         while True:
             chunk = resp.read(1024 * 1024)
             if not chunk:
                 break
             out.write(chunk)
-    return path
+    return path, resolved
 
 
 def upload_file(path: Path, mime_type: str, api_key: str) -> dict:
@@ -179,8 +225,9 @@ def analyze(args: argparse.Namespace) -> int:
         raise RuntimeError("GEMINI_API_KEY or GOOGLE_API_KEY is not configured")
 
     temp_path = None
+    resolved_source = None
     if args.url:
-        path = download_url(args.url)
+        path, resolved_source = download_url(args.url)
         temp_path = path
     elif args.file:
         path = Path(args.file).expanduser().resolve()
@@ -222,6 +269,7 @@ def analyze(args: argparse.Namespace) -> int:
             "ok": True,
             "model": model,
             "source": args.url or str(path),
+            "resolved_source": resolved_source,
             "mime_type": mime_type,
             "analysis": text,
         }

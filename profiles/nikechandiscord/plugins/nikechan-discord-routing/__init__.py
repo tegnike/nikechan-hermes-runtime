@@ -23,7 +23,8 @@ SUMMARY_RE = re.compile(r"(要約|まとめ|どんな話|何があった|内容|
 DISCORD_CONTEXT_RE = re.compile(r"(Discord|ディスコ|チャンネル|<#\d+>|#\S+)")
 TIME_CONTEXT_RE = re.compile(r"(ここ|直近|過去|今日|昨日|数時間|履歴|会話|ログ)")
 SEARCH_RE = re.compile(r"(調べて|調査|探して|検索|ログ探|履歴探|経緯|いつ.*話|誰.*話)")
-MUSIC_AUDIO_RE = re.compile(r"(楽曲解析|音楽解析|音声解析|この曲|曲.*(?:解析|分析|調べ)|音声.*(?:解析|分析|要約|まとめ|文字起こし)|歌詞|ボーカル|曲調|ジャンル|テンポ|mp3|wav|m4a|flac|ogg|aac)", re.IGNORECASE)
+MUSIC_AUDIO_RE = re.compile(r"(楽曲(?:解析|分析|取得)|音楽解析|音声解析|内容理解|この曲|曲.*(?:解析|分析|調べ)|音声.*(?:解析|分析|要約|まとめ|文字起こし)|歌詞|ボーカル|曲調|ジャンル|テンポ|suno|mp3|wav|m4a|flac|ogg|aac)", re.IGNORECASE)
+SUNO_URL_RE = re.compile(r"https?://(?:www\.)?suno\.com/song/[0-9a-fA-F-]{32,36}(?:[/?#][^\s<>\"]*)?", re.IGNORECASE)
 DIRECT_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"]+\.(?:mp3|wav|m4a|flac|ogg|aac|mp4|webm)(?:\?[^\s<>\"]*)?", re.IGNORECASE)
 MAX_MUSIC_OUTPUT_CHARS = 40000
 AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
@@ -542,7 +543,9 @@ def _event_audio_sources(event: Any) -> list[str]:
 
 
 def _direct_media_urls(text: str) -> list[str]:
-    return [m.group(0).rstrip("。、)") for m in DIRECT_MEDIA_URL_RE.finditer(text)]
+    urls = [m.group(0).rstrip("。、)") for m in SUNO_URL_RE.finditer(text)]
+    urls.extend(m.group(0).rstrip("。、)") for m in DIRECT_MEDIA_URL_RE.finditer(text))
+    return urls
 
 
 def _music_mode(text: str) -> str:
@@ -551,16 +554,49 @@ def _music_mode(text: str) -> str:
     return "music"
 
 
+def _recent_music_urls(event: Any, env: dict[str, str]) -> list[str]:
+    channel = _current_channel(event)
+    guild = _source_guild_id(event, env)
+    if not channel or not guild:
+        return []
+    helper = Path.home() / ".hermes" / "bin" / "discord-history"
+    args = [str(helper), "fetch", "--channel", channel, "--guild", guild, "--limit", "80"]
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    try:
+        result = subprocess.run(args, text=True, capture_output=True, timeout=45, env=proc_env)
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing music recent fetch failed: %s", exc)
+        return []
+    if result.returncode != 0:
+        logger.warning("nikechan-discord-routing music recent fetch error: %s", (result.stderr or result.stdout or "").strip()[:300])
+        return []
+    payload = result.stdout or ""
+    urls = [m.group(0).rstrip("。、)") for m in SUNO_URL_RE.finditer(payload)]
+    urls.extend(m.group(0).rstrip("。、)") for m in DIRECT_MEDIA_URL_RE.finditer(payload))
+    deduped = []
+    for url in urls:
+        if url not in deduped:
+            deduped.append(url)
+    return deduped
+
+
 def _run_music_audio_analysis(text: str, event: Any) -> tuple[str, list[str]]:
     helper = Path.home() / ".hermes" / "bin" / "gemini-audio-analyze"
+    env = _load_env()
     sources = _event_audio_sources(event) or _direct_media_urls(text)
+    notes_prefix: list[str] = []
+    if not sources:
+        sources = _recent_music_urls(event, env)
+        if sources:
+            notes_prefix.append("直近チャンネル履歴から音楽URLを取得")
     if not sources:
         payload = {
             "available": True,
             "skill": "music-audio-analysis",
             "helper": str(helper),
             "model": "gemini-3.5-flash",
-            "how_to_use": "音声・音楽ファイルを添付するか、mp3/wav/m4a/flac/ogg/aac/mp4 などの直接メディアURLを貼って、解析してと依頼してください。",
+            "how_to_use": "音声・音楽ファイルを添付するか、Suno共有URLまたはmp3/wav/m4a/flac/ogg/aac/mp4 などの直接メディアURLを貼って、解析してと依頼してください。",
             "can_do": ["曲調・ジャンル・構成の分析", "ボーカルや感情の説明", "聞き取れる歌詞の要旨", "音声内容の要約"],
             "limitations": ["通常チャットから任意のファイル一覧やスキル一覧は読めません", "歌詞全文の出力はしません"],
         }
@@ -579,7 +615,7 @@ def _run_music_audio_analysis(text: str, event: Any) -> tuple[str, list[str]]:
     proc_env = dict(os.environ)
     proc_env["HERMES_HOME"] = str(_home())
     result = subprocess.run(args, text=True, capture_output=True, timeout=300, env=proc_env)
-    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    notes = notes_prefix + ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
     if result.returncode != 0:
         payload = json.dumps({"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode}, ensure_ascii=False)
         return payload, notes

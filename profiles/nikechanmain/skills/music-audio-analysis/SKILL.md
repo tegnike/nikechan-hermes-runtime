@@ -29,8 +29,9 @@ Use this skill when the user asks about audio or music analysis, including:
 Prefer a local audio/video file path if Hermes provides one for an uploaded Discord attachment.
 Supported practical inputs are common audio/video files such as MP3, WAV, M4A, FLAC, OGG, AAC, and MP4.
 
-If the user provides a Discord attachment URL or other direct media URL, download it to a temporary file first, then analyze that file.
-Do not fetch arbitrary webpages looking for media unless the user explicitly asks and the URL is clearly a direct media source.
+If the user provides a Discord attachment URL, Suno共有URL, or other direct media URL, download it to a temporary file first, then analyze that file.
+The managed helper can resolve public `https://suno.com/song/...` pages by extracting the embedded `audio_url`.
+Do not fetch arbitrary webpages looking for media unless the user explicitly asks and the URL is Suno or a clearly direct media source.
 
 ## Tool
 
@@ -46,7 +47,7 @@ For speech-heavy audio:
 /Users/nikenike/.hermes/bin/gemini-audio-analyze analyze --file AUDIO_PATH --mode speech
 ```
 
-For a direct media URL:
+For a Suno共有URL or direct media URL:
 
 ```bash
 /Users/nikenike/.hermes/bin/gemini-audio-analyze analyze --url MEDIA_URL --mode music
