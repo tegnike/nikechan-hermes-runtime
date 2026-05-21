@@ -43,6 +43,7 @@ GENERIC_CHANNEL_WORDS = {"discord", "Discord", "ディスコ", "この", "現在
 logger = logging.getLogger(__name__)
 _REMINDER_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 _ROUTE_INTENT_CACHE: dict[str, dict[str, Any]] = {}
+_SHOULD_REPLY_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _home() -> Path:
@@ -281,6 +282,223 @@ def _json_from_text(text: str) -> dict[str, Any]:
         return value if isinstance(value, dict) else {}
     except Exception:
         return {}
+
+
+def _profile_discord_config() -> dict[str, Any]:
+    config_path = _home() / "config.yaml"
+    if not config_path.exists():
+        return {}
+    text = config_path.read_text(encoding="utf-8", errors="replace")
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(text) or {}
+        discord_cfg = data.get("discord", {})
+        return discord_cfg if isinstance(discord_cfg, dict) else {}
+    except Exception:
+        pass
+
+    # Minimal fallback for environments where PyYAML is not importable in the
+    # plugin interpreter. We only need simple scalar keys under `discord:`.
+    config: dict[str, Any] = {}
+    in_discord = False
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        if not line or line.lstrip().startswith("#"):
+            continue
+        if re.match(r"^discord:\s*$", line):
+            in_discord = True
+            continue
+        if in_discord and not line.startswith(" "):
+            break
+        if not in_discord:
+            continue
+        match = re.match(r"^\s+([A-Za-z0-9_]+):\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        key, value = match.groups()
+        lowered = value.lower()
+        if lowered in {"true", "false"}:
+            config[key] = lowered == "true"
+        else:
+            config[key] = value.strip("\"'")
+    return config
+
+
+def _config_bool(name: str, default: bool) -> bool:
+    env_name = "NIKECHAN_DISCORD_" + name.upper()
+    raw = os.environ.get(env_name)
+    if raw is None:
+        raw = os.environ.get("DISCORD_" + name.upper())
+    if raw is None:
+        raw = _profile_discord_config().get(name)
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _bot_was_mentioned(event: Any) -> bool:
+    raw = getattr(event, "raw_message", None)
+    mentions = getattr(raw, "mentions", None) or []
+    if not mentions:
+        return False
+    state_user = getattr(getattr(raw, "_state", None), "user", None)
+    if state_user is not None:
+        return any(m == state_user for m in mentions)
+    return False
+
+
+def _looks_addressed_to_nikechan(text: str) -> bool:
+    return bool(re.search(r"(ニケちゃん|AIニケちゃん|nikechan|nike-?chan)", text, re.IGNORECASE))
+
+
+def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, Any] | None:
+    if env.get("NIKECHAN_DISABLE_LLM_SHOULD_REPLY") == "1":
+        return None
+
+    api_key = env.get("ALIBABA_CODING_PLAN_API_KEY") or env.get("DASHSCOPE_API_KEY")
+    base_url = (env.get("ALIBABA_CODING_PLAN_BASE_URL") or "https://coding-intl.dashscope.aliyuncs.com/v1").rstrip("/")
+    model = env.get("HERMES_INFERENCE_MODEL") or "qwen3.6-plus"
+    if not api_key:
+        return None
+
+    source = getattr(event, "source", None)
+    sender = getattr(source, "user_name", "") or ""
+    chat_name = getattr(source, "chat_name", "") or ""
+    reply_to_text = getattr(event, "reply_to_text", None) or ""
+    prompt = (
+        "Decide whether AI Nikechan should reply to this single public Discord message.\n"
+        "Return ONLY compact JSON with this schema:\n"
+        "{\"reply\":true,\"confidence\":0.0,\"reason\":\"...\"}\n"
+        "Reply true when:\n"
+        "- the message is addressed to Nikechan by name, mention, or reply\n"
+        "- it is a direct question, request, instruction, or asks for help/status/capability\n"
+        "- it asks for Discord summary/search, music/audio analysis, reminders, or amnesty handling\n"
+        "- it is a clear follow-up that expects the bot to continue the current exchange\n"
+        "Reply false when:\n"
+        "- it is ambient conversation between humans\n"
+        "- it is a short reaction, joke, status update, or side comment not addressed to the bot\n"
+        "- it mentions another human and is not asking Nikechan to do anything\n"
+        "- it is only pasted logs/quotes without a question or request to Nikechan\n"
+        "Prefer false when ambiguous. Do not judge safety here; only decide whether a bot response is expected.\n\n"
+        f"Channel: {chat_name}\n"
+        f"Sender: {sender}\n"
+        f"Reply-to text, if any: {reply_to_text[:500]}\n"
+        f"Message: {text}"
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a conservative Discord reply gate. Output JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 180,
+    }
+    req = urllib.request.Request(
+        base_url + "/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        parsed = _json_from_text(content)
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing should_reply LLM failed: %s", exc)
+        return None
+
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    return {
+        "reply": bool(parsed.get("reply")),
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": str(parsed.get("reason") or "")[:200],
+        "source": "llm",
+    }
+
+
+def _fallback_should_reply(text: str, event: Any) -> dict[str, Any]:
+    route = _ROUTE_INTENT_CACHE.get(text) or _fallback_route_intent(text)
+    if route.get("action") != "none":
+        return {"reply": True, "confidence": 0.9, "reason": "managed route intent", "source": "fallback"}
+    if _bot_was_mentioned(event) or getattr(event, "reply_to_message_id", None) or _looks_addressed_to_nikechan(text):
+        return {"reply": True, "confidence": 0.85, "reason": "addressed to bot", "source": "fallback"}
+    if re.search(r"[?？]|(教えて|お願い|確認して|見て|できる|できますか|どう|なに|何|なぜ|なんで|いつ|どこ|誰)", text):
+        return {"reply": True, "confidence": 0.7, "reason": "direct question/request", "source": "fallback"}
+    return {"reply": False, "confidence": 0.6, "reason": "ambient message fallback", "source": "fallback"}
+
+
+def _should_reply(event: Any) -> dict[str, Any]:
+    text = getattr(event, "text", "") or ""
+    if not isinstance(text, str) or not text.strip():
+        return {"reply": False, "confidence": 1.0, "reason": "empty message", "source": "local"}
+    if text.startswith("/"):
+        return {"reply": True, "confidence": 1.0, "reason": "command", "source": "local"}
+    route = _ROUTE_INTENT_CACHE.get(text) or _fallback_route_intent(text)
+    if route.get("action") != "none":
+        return {"reply": True, "confidence": 1.0, "reason": f"managed route: {route.get('action')}", "source": "local"}
+    if _bot_was_mentioned(event) or getattr(event, "reply_to_message_id", None) or _looks_addressed_to_nikechan(text):
+        return {"reply": True, "confidence": 1.0, "reason": "addressed to bot", "source": "local"}
+
+    cache_key = text
+    cached = _SHOULD_REPLY_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    env = _load_env()
+    fallback = _fallback_should_reply(text, event)
+    if not fallback.get("reply"):
+        result = fallback
+        _SHOULD_REPLY_CACHE[cache_key] = result
+        if len(_SHOULD_REPLY_CACHE) > 512:
+            _SHOULD_REPLY_CACHE.pop(next(iter(_SHOULD_REPLY_CACHE)))
+        return result
+
+    llm = _llm_should_reply(text, event, env)
+    if llm and llm.get("confidence", 0.0) >= 0.7:
+        result = llm
+    else:
+        result = fallback
+
+    _SHOULD_REPLY_CACHE[cache_key] = result
+    if len(_SHOULD_REPLY_CACHE) > 512:
+        _SHOULD_REPLY_CACHE.pop(next(iter(_SHOULD_REPLY_CACHE)))
+    return result
+
+
+def _silent_ingest(event: Any, session_store: Any) -> None:
+    if not _config_bool("should_reply_silent_ingest", True):
+        return
+    if session_store is None:
+        return
+    text = getattr(event, "text", "") or ""
+    if not isinstance(text, str) or not text.strip():
+        return
+    source = getattr(event, "source", None)
+    if source is None:
+        return
+    try:
+        entry = session_store.get_or_create_session(source)
+        user_name = getattr(source, "user_name", None)
+        content = f"[{user_name}] {text}" if user_name else text
+        message = {
+            "role": "user",
+            "content": content,
+            "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+        }
+        message_id = getattr(event, "message_id", None)
+        if message_id:
+            message["message_id"] = str(message_id)
+        session_store.append_to_transcript(entry.session_id, message)
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing silent ingest failed: %s", exc)
 
 
 def _clean_query_list(values: Any) -> list[str]:
@@ -1193,11 +1411,21 @@ def _rewrite(event: Any) -> dict[str, str] | None:
 
 
 def register(ctx):
-    def hook(event=None, **_kwargs):
+    def hook(event=None, session_store=None, **_kwargs):
         if event is None:
             return None
         if "discord" not in _platform_name(event):
             return None
+        if _config_bool("should_reply", False):
+            decision = _should_reply(event)
+            if not decision.get("reply"):
+                _silent_ingest(event, session_store)
+                logger.info(
+                    "nikechan-discord-routing should_reply skip: confidence=%s reason=%s",
+                    decision.get("confidence"),
+                    decision.get("reason"),
+                )
+                return {"action": "skip", "reason": "should_reply_false"}
         return _rewrite(event)
 
     ctx.register_hook("pre_gateway_dispatch", hook)

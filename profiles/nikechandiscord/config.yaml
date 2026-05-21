@@ -254,6 +254,8 @@ display:
 discord:
   gateway_restart_notification: false
   require_mention: false
+  should_reply: true
+  should_reply_silent_ingest: true
   free_response_channels: 1404724174890602496
   allowed_channels: 1404724174890602496
   auto_thread: false
