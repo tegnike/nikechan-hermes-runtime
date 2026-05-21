@@ -339,6 +339,44 @@ def _config_bool(name: str, default: bool) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _discord_reaction_rest(event: Any, emoji: str, *, remove: bool = False) -> None:
+    if not _config_bool("should_reply_reactions", True):
+        return
+    env = _load_env()
+    token = env.get("DISCORD_BOT_TOKEN") or env.get("DISCORD_TOKEN")
+    if not token:
+        return
+
+    raw = getattr(event, "raw_message", None)
+    channel_id = None
+    if raw is not None:
+        channel = getattr(raw, "channel", None)
+        channel_id = getattr(channel, "id", None)
+    if not channel_id:
+        source = getattr(event, "source", None)
+        channel_id = getattr(source, "chat_id", None)
+    message_id = getattr(event, "message_id", None) or getattr(raw, "id", None)
+    if not channel_id or not message_id:
+        return
+
+    encoded = urllib.parse.quote(emoji, safe="")
+    url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/reactions/{encoded}/@me"
+    method = "DELETE" if remove else "PUT"
+    req = urllib.request.Request(
+        url,
+        method=method,
+        headers={
+            "Authorization": f"Bot {token}",
+            "User-Agent": "nikechan-hermes-runtime",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=4):
+            pass
+    except Exception as exc:
+        logger.debug("nikechan-discord-routing reaction failed (%s %s): %s", method, emoji, exc)
+
+
 def _bot_was_mentioned(event: Any) -> bool:
     raw = getattr(event, "raw_message", None)
     mentions = getattr(raw, "mentions", None) or []
@@ -1411,8 +1449,11 @@ def register(ctx):
         if "discord" not in _platform_name(event):
             return None
         if _config_bool("should_reply", False):
+            _discord_reaction_rest(event, "👀")
             decision = _should_reply(event)
             if not decision.get("reply"):
+                _discord_reaction_rest(event, "👀", remove=True)
+                _discord_reaction_rest(event, "👍")
                 _silent_ingest(event, session_store)
                 logger.info(
                     "nikechan-discord-routing should_reply skip: confidence=%s reason=%s",
