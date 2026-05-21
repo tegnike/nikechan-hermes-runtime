@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _REMINDER_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 _ROUTE_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 _SHOULD_REPLY_CACHE: dict[str, dict[str, Any]] = {}
+_PERSON_CONTEXT_CACHE: dict[str, tuple[float, str | None]] = {}
 
 
 def _home() -> Path:
@@ -54,8 +55,14 @@ def _home() -> Path:
 
 def _load_env() -> dict[str, str]:
     env = dict(os.environ)
-    env_file = _home() / ".env"
-    if env_file.exists():
+    env_files = [_home() / ".env"]
+    extra_files = env.get("NIKECHAN_ENV_FILES") or env.get("NIKECHAN_DB_ENV_FILES")
+    if extra_files:
+        env_files.extend(Path(part).expanduser() for part in extra_files.split(":") if part.strip())
+    env_files.append(Path.home() / "WorkSpace" / "nikechan" / ".env")
+    for env_file in env_files:
+        if not env_file.exists():
+            continue
         for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
             raw = line.strip()
             if not raw or raw.startswith("#") or "=" not in raw:
@@ -339,6 +346,184 @@ def _config_bool(name: str, default: bool) -> bool:
     if isinstance(raw, bool):
         return raw
     return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _config_int(name: str, default: int) -> int:
+    env_name = "NIKECHAN_DISCORD_" + name.upper()
+    raw = os.environ.get(env_name)
+    if raw is None:
+        raw = os.environ.get("DISCORD_" + name.upper())
+    if raw is None:
+        raw = _profile_discord_config().get(name)
+    try:
+        return int(raw)
+    except Exception:
+        return default
+
+
+def _truncate(value: Any, limit: int) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _supabase_request(path: str, env: dict[str, str]) -> Any:
+    url = env.get("SUPABASE_URL")
+    key = (
+        env.get("SUPABASE_SERVICE_ROLE_KEY")
+        or env.get("SUPABASE_PUBLIC_READ_KEY")
+        or env.get("SUPABASE_ANON_KEY")
+    )
+    if not url or not key:
+        return None
+    req = urllib.request.Request(
+        url.rstrip("/") + "/rest/v1/" + path,
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _person_context_for_event(event: Any) -> str | None:
+    if not _config_bool("person_context", True):
+        return None
+    discord_user_id = _source_user_id(event)
+    if not discord_user_id:
+        return None
+
+    now = time.time()
+    cached = _PERSON_CONTEXT_CACHE.get(discord_user_id)
+    if cached and now - cached[0] < max(30, _config_int("person_context_cache_seconds", 300)):
+        return cached[1]
+
+    env = _load_env()
+    platform_id = urllib.parse.quote(discord_user_id, safe="")
+    account_query = (
+        "platform_accounts"
+        f"?platform=eq.discord&platform_user_id=eq.{platform_id}"
+        "&select=user_id,username,display_name,guild_nickname"
+        "&limit=1"
+    )
+    try:
+        accounts = _supabase_request(account_query, env) or []
+        account = accounts[0] if accounts else None
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing person context lookup failed: %s", exc)
+        account = None
+
+    if not account:
+        _PERSON_CONTEXT_CACHE[discord_user_id] = (now, None)
+        return None
+
+    user_id = account.get("user_id")
+    user: dict[str, Any] = {}
+    if user_id:
+        try:
+            uid = urllib.parse.quote(str(user_id), safe="")
+            rows = _supabase_request(
+                f"users?id=eq.{uid}&select=*&limit=1",
+                env,
+            ) or []
+            user = rows[0] if rows else {}
+        except Exception as exc:
+            logger.warning("nikechan-discord-routing user context lookup failed: %s", exc)
+    episodes: list[dict[str, Any]] = []
+    if user_id and _config_int("person_context_recent_episodes", 3) > 0:
+        try:
+            episode_limit = max(0, min(_config_int("person_context_recent_episodes", 3), 5))
+            uid = urllib.parse.quote(str(user_id), safe="")
+            episodes = _supabase_request(
+                f"contact_episodes?user_id=eq.{uid}&order=occurred_at.desc&limit={episode_limit}"
+                "&select=content,source,event_type,occurred_at",
+                env,
+            ) or []
+        except Exception as exc:
+            logger.debug("nikechan-discord-routing person episodes lookup failed: %s", exc)
+
+    affect: dict[str, Any] | None = None
+    if user_id:
+        try:
+            uid = urllib.parse.quote(str(user_id), safe="")
+            rows = _supabase_request(
+                f"person_affect_state?user_id=eq.{uid}"
+                "&select=trust,safety,affinity,distance,resentment,familiarity,last_event_type,last_cause&limit=1",
+                env,
+            ) or []
+            affect = rows[0] if rows else None
+        except Exception:
+            affect = None
+
+    source = getattr(event, "source", None)
+    sender_name = (
+        getattr(source, "user_name", None)
+        or account.get("guild_nickname")
+        or account.get("display_name")
+        or account.get("username")
+        or "このユーザー"
+    )
+    nickname = user.get("nickname") or account.get("guild_nickname") or account.get("display_name")
+    call_name = nickname or f"{sender_name}さん"
+    traits = user.get("traits") if isinstance(user.get("traits"), (dict, list)) else None
+    traits_text = ""
+    if isinstance(traits, dict) and traits:
+        traits_text = ", ".join(f"{k}: {v}" for k, v in list(traits.items())[:8])
+    elif isinstance(traits, list) and traits:
+        traits_text = ", ".join(str(item) for item in traits[:8])
+
+    lines = [
+        "[DISCORD_PERSON_CONTEXT]",
+        "このブロックは現在の発言者に合わせるための内部人物文脈です。自然な応答方針にだけ使い、DB・内部ID・platform横断情報として明かさないでください。",
+        f"現在の発言者: {sender_name}",
+        f"呼び方の候補: {call_name}",
+    ]
+    if user.get("relationship"):
+        lines.append(f"関係ラベル: {_truncate(user.get('relationship'), 80)}")
+    if user.get("memo"):
+        lines.append(f"人物メモ: {_truncate(user.get('memo'), 260)}")
+    if user.get("context"):
+        lines.append(f"最近の交流文脈: {_truncate(user.get('context'), 320)}")
+    if traits_text:
+        lines.append(f"特徴: {_truncate(traits_text, 220)}")
+    if user.get("interaction_count") is not None:
+        lines.append(f"交流回数目安: {user.get('interaction_count')}")
+    if affect:
+        affect_parts = []
+        for key in ("trust", "safety", "affinity", "distance", "resentment", "familiarity"):
+            value = affect.get(key)
+            if isinstance(value, (int, float)) and abs(float(value)) >= 0.15:
+                affect_parts.append(f"{key}={float(value):.2f}")
+        if affect_parts:
+            lines.append("相手別affect: " + ", ".join(affect_parts))
+        if affect.get("last_cause"):
+            lines.append(f"affectの最近の理由: {_truncate(affect.get('last_cause'), 180)}")
+    if episodes:
+        lines.append("直近エピソード:")
+        for ep in episodes[:5]:
+            occurred = str(ep.get("occurred_at") or "")[:10]
+            lines.append(f"- {occurred}: {_truncate(ep.get('content'), 220)}")
+    lines.extend([
+        "応答方針: この人に合わせて呼び方・距離感・前提知識を調整してください。内部文脈をそのまま列挙せず、必要な場合だけ自然に反映してください。",
+        "[/DISCORD_PERSON_CONTEXT]",
+    ])
+    context = "\n".join(lines)
+    _PERSON_CONTEXT_CACHE[discord_user_id] = (now, context)
+    if len(_PERSON_CONTEXT_CACHE) > 512:
+        _PERSON_CONTEXT_CACHE.pop(next(iter(_PERSON_CONTEXT_CACHE)))
+    return context
+
+
+def _with_person_context(text: str, event: Any) -> str:
+    if "[DISCORD_PERSON_CONTEXT]" in text:
+        return text
+    context = _person_context_for_event(event)
+    if not context:
+        return text
+    return context + "\n\n[USER_MESSAGE]\n" + text
 
 
 def _discord_reaction_rest(event: Any, emoji: str, *, remove: bool = False) -> None:
@@ -1484,6 +1669,15 @@ def register(ctx):
                     decision.get("reason"),
                 )
                 return {"action": "skip", "reason": "should_reply_false"}
-        return _rewrite(event)
+        routed = _rewrite(event)
+        if routed and routed.get("action") == "rewrite" and isinstance(routed.get("text"), str):
+            routed["text"] = _with_person_context(routed["text"], event)
+            return routed
+        text = getattr(event, "text", "") or ""
+        if isinstance(text, str):
+            contextualized = _with_person_context(text, event)
+            if contextualized != text:
+                return {"action": "rewrite", "text": contextualized}
+        return routed
 
     ctx.register_hook("pre_gateway_dispatch", hook)
