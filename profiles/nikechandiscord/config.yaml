@@ -53,6 +53,28 @@ agent:
   max_turns: 60
   verbose: false
   reasoning_effort: medium
+  disabled_toolsets:
+  - terminal
+  - file
+  - skills
+  - memory
+  - code_execution
+  - cronjob
+  - delegation
+  - messaging
+  - todo
+  - browser
+  - web
+  - search
+  - safe
+  - image_gen
+  - vision
+  - video
+  - tts
+  - session_search
+  - clarify
+  - discord
+  - discord_admin
   personalities:
     helpful: You are a helpful, friendly AI assistant.
     concise: You are a concise assistant. Keep responses brief and to the point.
@@ -101,8 +123,7 @@ platform_toolsets:
   - hermes-cli
   telegram:
   - hermes-telegram
-  discord:
-  - hermes-discord
+  discord: []
   whatsapp:
   - hermes-whatsapp
   slack:

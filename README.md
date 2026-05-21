@@ -48,6 +48,17 @@ model:
   provider: alibaba-coding-plan
 ```
 
+Discord gateway sessions are intentionally locked down for public channel use:
+
+- `platform_toolsets.discord: []`
+- `agent.disabled_toolsets` disables terminal, file, skill management, memory,
+  cron, delegation, Discord admin, and other tool-capable surfaces.
+
+This means unknown Discord users can chat with AI Nikechan in the allowed
+channel, but they cannot use the bot to edit config, create skills, run shell
+commands, mutate memory, or administer Discord. Runtime changes are managed from
+this repo on the subMac.
+
 ## Live Management
 
 Hermes reads files from `~/.hermes`, but the managed files should be symlinked
