@@ -1,0 +1,15 @@
+.DS_Store
+*.pyc
+__pycache__/
+
+# Runtime-only Hermes state
+**/.env
+**/auth.json
+**/auth.lock
+**/state.db*
+**/sessions/
+**/logs/
+**/*.lock
+
+# Local scratch
+tmp/

@@ -1,0 +1,289 @@
+#!/Users/nikenike/.hermes/hermes-agent/venv/bin/python
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+DISCORD_EPOCH_MS = 1420070400000
+API = "https://discord.com/api/v10"
+
+
+def load_env() -> dict:
+    env = dict(os.environ)
+    homes = []
+    if env.get("HERMES_HOME"):
+        homes.append(Path(env["HERMES_HOME"]))
+    homes.append(Path.home() / ".hermes")
+    for home in homes:
+        p = home / ".env"
+        if not p.exists():
+            continue
+        for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            env.setdefault(k.strip(), v.strip())
+    return env
+
+
+ENV = load_env()
+TOKEN = ENV.get("DISCORD_BOT_TOKEN", "").strip()
+ALLOWED_GUILDS = {
+    g.strip()
+    for g in ENV.get("DISCORD_ALLOWED_GUILDS", "").split(",")
+    if g.strip()
+}
+
+
+class DiscordError(RuntimeError):
+    pass
+
+
+def request(method: str, path: str, params: dict | None = None, body: dict | None = None):
+    if not TOKEN:
+        raise DiscordError("DISCORD_BOT_TOKEN is not configured")
+    url = API + path
+    if params:
+        url += "?" + urllib.parse.urlencode({k: v for k, v in params.items() if v not in (None, "")})
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    for attempt in range(6):
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Authorization": f"Bot {TOKEN}",
+                "Content-Type": "application/json",
+                "User-Agent": "nikechan-hermes-discord-history/1.0",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                if resp.status == 204:
+                    return None
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            body_text = e.read().decode("utf-8", errors="replace")
+            if e.code == 429 and attempt < 5:
+                retry_after = 1.0
+                try:
+                    retry_after = float((json.loads(body_text) or {}).get("retry_after") or retry_after)
+                except Exception:
+                    pass
+                time.sleep(max(0.25, min(retry_after, 5.0)) + 0.1)
+                continue
+            raise DiscordError(f"Discord API {e.code}: {body_text}") from e
+    raise DiscordError("Discord API 429 retry limit exceeded")
+
+
+def parse_time(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    s = value.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        s += "T00:00:00+00:00"
+    parsed = dt.datetime.fromisoformat(s)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def snowflake_from_time(ts: dt.datetime) -> str:
+    ms = int(ts.timestamp() * 1000)
+    return str((ms - DISCORD_EPOCH_MS) << 22)
+
+
+def time_from_snowflake(snowflake: str) -> dt.datetime:
+    ms = (int(snowflake) >> 22) + DISCORD_EPOCH_MS
+    return dt.datetime.fromtimestamp(ms / 1000, tz=dt.timezone.utc)
+
+
+def iso(ts: dt.datetime) -> str:
+    return ts.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def list_guilds():
+    return request("GET", "/users/@me/guilds")
+
+
+def list_channels(guild_id: str):
+    return request("GET", f"/guilds/{guild_id}/channels")
+
+
+def channel_info(channel_id: str):
+    return request("GET", f"/channels/{channel_id}")
+
+
+def assert_allowed_guild(guild_id: str | None, context: str = "channel"):
+    if not ALLOWED_GUILDS:
+        return
+    if not guild_id or guild_id not in ALLOWED_GUILDS:
+        allowed = ", ".join(sorted(ALLOWED_GUILDS))
+        raise DiscordError(
+            f"{context} is outside this profile's allowed Discord server. "
+            f"guild_id={guild_id or 'unknown'} allowed_guilds={allowed}"
+        )
+
+
+def candidate_guilds(explicit_guild_id: str | None) -> list[dict]:
+    if explicit_guild_id:
+        assert_allowed_guild(explicit_guild_id, "requested guild")
+        return [{"id": explicit_guild_id}]
+    if ALLOWED_GUILDS:
+        return [{"id": gid} for gid in sorted(ALLOWED_GUILDS)]
+    return list_guilds()
+
+
+def resolve_channel(channel: str, guild_id: str | None) -> dict:
+    raw = channel.strip()
+    raw = raw[2:-1] if raw.startswith("<#") and raw.endswith(">") else raw
+    if raw.isdigit():
+        ch = channel_info(raw)
+        assert_allowed_guild(ch.get("guild_id"), f"channel {raw}")
+        return {"id": ch["id"], "name": ch.get("name"), "guild_id": ch.get("guild_id"), "type": ch.get("type")}
+    name = raw[1:] if raw.startswith("#") else raw
+    guilds = candidate_guilds(guild_id)
+    matches = []
+    for g in guilds:
+        for ch in list_channels(g["id"]):
+            if ch.get("name") == name:
+                assert_allowed_guild(g["id"], f"channel #{name}")
+                matches.append({"id": ch["id"], "name": ch.get("name"), "guild_id": g["id"], "type": ch.get("type")})
+    if not matches:
+        raise DiscordError(f"channel not found: {channel}")
+    if len(matches) > 1:
+        raise DiscordError(f"ambiguous channel name {channel}; use channel id. matches={matches}")
+    return matches[0]
+
+
+def normalize_message(msg: dict, guild_id: str | None, channel_id: str) -> dict:
+    author = msg.get("author") or {}
+    jump = f"https://discord.com/channels/{guild_id or '@me'}/{channel_id}/{msg.get('id')}"
+    return {
+        "id": msg.get("id"),
+        "timestamp": msg.get("timestamp"),
+        "author": {
+            "id": author.get("id"),
+            "username": author.get("username"),
+            "display_name": author.get("global_name"),
+            "bot": author.get("bot", False),
+        },
+        "content": msg.get("content", ""),
+        "attachments": [
+            {"filename": a.get("filename"), "url": a.get("url"), "size": a.get("size")}
+            for a in msg.get("attachments", [])
+        ],
+        "embeds": [
+            {"title": e.get("title"), "url": e.get("url"), "description": e.get("description")}
+            for e in msg.get("embeds", [])
+        ],
+        "reactions": [
+            {"emoji": (r.get("emoji") or {}).get("name"), "count": r.get("count", 0)}
+            for r in msg.get("reactions", [])
+        ],
+        "jump_url": jump,
+    }
+
+
+def fetch_messages(channel: str, guild_id: str | None, start: dt.datetime | None, end: dt.datetime | None, limit: int):
+    ch = resolve_channel(channel, guild_id)
+    channel_id = ch["id"]
+    after = snowflake_from_time(start) if start else None
+    before = snowflake_from_time(end) if end else None
+    out = []
+    seen = set()
+    while len(out) < limit:
+        batch_limit = min(100, limit - len(out))
+        params = {"limit": str(batch_limit)}
+        if before:
+            params["before"] = before
+        if after:
+            params["after"] = after
+        batch = request("GET", f"/channels/{channel_id}/messages", params=params)
+        if not batch:
+            break
+        stop = False
+        for msg in batch:
+            mid = msg["id"]
+            if mid in seen:
+                continue
+            seen.add(mid)
+            ts = parse_time(msg.get("timestamp"))
+            if start and ts and ts < start:
+                stop = True
+                continue
+            if end and ts and ts > end:
+                continue
+            out.append(normalize_message(msg, ch.get("guild_id"), channel_id))
+        oldest = min(batch, key=lambda m: int(m["id"]))["id"]
+        before = oldest
+        if stop or len(batch) < batch_limit:
+            break
+        time.sleep(0.25)
+    out.sort(key=lambda m: m["timestamp"] or "")
+    return {"channel": ch, "from": iso(start) if start else None, "to": iso(end) if end else None, "count": len(out), "messages": out}
+
+
+def cmd_fetch(args):
+    start = parse_time(args.from_time)
+    end = parse_time(args.to_time)
+    print(json.dumps(fetch_messages(args.channel, args.guild, start, end, args.limit), ensure_ascii=False, indent=2))
+
+
+def cmd_search(args):
+    start = parse_time(args.from_time)
+    end = parse_time(args.to_time)
+    data = fetch_messages(args.channel, args.guild, start, end, args.limit)
+    q = args.query.lower()
+    results = []
+    for msg in data["messages"]:
+        hay = " ".join([
+            msg.get("content") or "",
+            msg["author"].get("username") or "",
+            msg["author"].get("display_name") or "",
+            " ".join(a.get("filename") or "" for a in msg.get("attachments", [])),
+            " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
+        ]).lower()
+        if q in hay:
+            results.append(msg)
+    data["query"] = args.query
+    data["results"] = results[: args.result_limit]
+    data["result_count"] = len(data["results"])
+    data.pop("messages", None)
+    print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Fetch/search Discord message history safely for Hermes skills.")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    for name in ("fetch", "search"):
+        p = sub.add_parser(name)
+        p.add_argument("--channel", required=True, help="Channel id, <#id>, or #name")
+        p.add_argument("--guild", help="Guild id; required only for ambiguous #names")
+        p.add_argument("--from", dest="from_time", help="UTC or offset ISO timestamp/date")
+        p.add_argument("--to", dest="to_time", help="UTC or offset ISO timestamp/date")
+        p.add_argument("--limit", type=int, default=300, help="Maximum messages to scan/fetch")
+        if name == "search":
+            p.add_argument("--query", required=True)
+            p.add_argument("--result-limit", type=int, default=30)
+    args = parser.parse_args()
+    try:
+        if args.cmd == "fetch":
+            cmd_fetch(args)
+        elif args.cmd == "search":
+            cmd_search(args)
+    except DiscordError as e:
+        print(json.dumps({"error": str(e)}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()
