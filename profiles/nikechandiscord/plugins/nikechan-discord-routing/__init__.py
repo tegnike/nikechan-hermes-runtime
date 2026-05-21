@@ -7,6 +7,8 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -375,6 +377,15 @@ def _discord_reaction_rest(event: Any, emoji: str, *, remove: bool = False) -> N
             pass
     except Exception as exc:
         logger.debug("nikechan-discord-routing reaction failed (%s %s): %s", method, emoji, exc)
+
+
+def _discord_reaction_rest_later(event: Any, emoji: str, *, remove: bool = False, delay: float = 2.0) -> None:
+    def worker() -> None:
+        time.sleep(delay)
+        _discord_reaction_rest(event, emoji, remove=remove)
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
 
 
 def _bot_was_mentioned(event: Any) -> bool:
@@ -1454,6 +1465,7 @@ def register(ctx):
             if not decision.get("reply"):
                 _discord_reaction_rest(event, "👀", remove=True)
                 _discord_reaction_rest(event, "👍")
+                _discord_reaction_rest_later(event, "✅", remove=True)
                 _silent_ingest(event, session_store)
                 logger.info(
                     "nikechan-discord-routing should_reply skip: confidence=%s reason=%s",
