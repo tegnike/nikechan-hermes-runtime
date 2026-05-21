@@ -21,10 +21,6 @@ QUERY_DROP_PHRASES = (
     "その後に",
     "あとに",
     "最近",
-    "作りました",
-    "作った",
-    "作成した",
-    "つくった",
     "調べて",
     "調査",
     "探して",
@@ -174,6 +170,23 @@ def query_terms(query: str) -> list[str]:
     return terms or [raw.strip()]
 
 
+def query_term_groups(queries: list[str]) -> list[list[str]]:
+    groups = []
+    for query in queries:
+        terms = query_terms(query)
+        if terms and terms not in groups:
+            groups.append(terms)
+    return groups
+
+
+def message_matches(hay: str, queries: list[str], groups: list[list[str]]) -> bool:
+    for query in queries:
+        literal = query.lower().strip()
+        if literal and literal in hay:
+            return True
+    return any(all(term in hay for term in terms) for terms in groups)
+
+
 def list_guilds():
     return request("GET", "/users/@me/guilds")
 
@@ -306,8 +319,9 @@ def cmd_search(args):
     start = parse_time(args.from_time)
     end = parse_time(args.to_time)
     data = fetch_messages(args.channel, args.guild, start, end, args.limit)
-    q = args.query.lower()
+    queries = unique_preserve_order([args.query] + list(args.alternate_query or []))
     terms = query_terms(args.query)
+    term_groups = query_term_groups(queries)
     results = []
     for msg in data["messages"]:
         hay = " ".join([
@@ -317,10 +331,12 @@ def cmd_search(args):
             " ".join(a.get("filename") or "" for a in msg.get("attachments", [])),
             " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
         ]).lower()
-        if q in hay or all(term in hay for term in terms):
+        if message_matches(hay, queries, term_groups):
             results.append(msg)
     data["query"] = args.query
     data["query_terms"] = terms
+    data["alternate_queries"] = queries[1:]
+    data["query_term_groups"] = term_groups
     data["results"] = results[: args.result_limit]
     data["result_count"] = len(data["results"])
     data.pop("messages", None)
@@ -332,8 +348,9 @@ def cmd_search_guild(args):
     assert_allowed_guild(guild_id, "requested guild")
     start = parse_time(args.from_time)
     end = parse_time(args.to_time)
-    query = args.query.lower()
+    queries = unique_preserve_order([args.query] + list(args.alternate_query or []))
     terms = query_terms(args.query)
+    term_groups = query_term_groups(queries)
     results = []
     errors = []
     scanned_channels = 0
@@ -358,7 +375,7 @@ def cmd_search_guild(args):
                 " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
                 " ".join(e.get("description") or "" for e in msg.get("embeds", [])),
             ]).lower()
-            if query in hay or all(term in hay for term in terms):
+            if message_matches(hay, queries, term_groups):
                 msg["channel"] = data["channel"]
                 results.append(msg)
 
@@ -370,6 +387,8 @@ def cmd_search_guild(args):
             "to": iso(end) if end else None,
             "query": args.query,
             "query_terms": terms,
+            "alternate_queries": queries[1:],
+            "query_term_groups": term_groups,
             "scanned_channels": scanned_channels,
             "scanned_messages": scanned_messages,
             "result_count_total": len(results),
@@ -412,6 +431,7 @@ def main():
         p.add_argument("--limit", type=int, default=300, help="Maximum messages to scan/fetch")
         if name == "search":
             p.add_argument("--query", required=True)
+            p.add_argument("--alternate-query", action="append", default=[])
             p.add_argument("--result-limit", type=int, default=30)
     p = sub.add_parser("search-guild")
     p.add_argument("--guild", required=True, help="Guild id to search. Must be in DISCORD_ALLOWED_GUILDS.")
@@ -419,6 +439,7 @@ def main():
     p.add_argument("--to", dest="to_time", help="UTC or offset ISO timestamp/date")
     p.add_argument("--limit-per-channel", type=int, default=700, help="Maximum messages to scan per channel")
     p.add_argument("--query", required=True)
+    p.add_argument("--alternate-query", action="append", default=[])
     p.add_argument("--result-limit", type=int, default=30)
     p = sub.add_parser("list-channels")
     p.add_argument("--guild", required=True, help="Guild id to list. Must be in DISCORD_ALLOWED_GUILDS.")
