@@ -150,6 +150,34 @@ def append_decision(entry: dict):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def evidence_link(guild_id: str, message: dict) -> str | None:
+    jump_url = message.get("jump_url")
+    if jump_url:
+        return jump_url
+    channel_id = message.get("_channel_id")
+    message_id = message.get("id")
+    if guild_id and channel_id and message_id:
+        return f"https://discord.com/channels/{guild_id}/{channel_id}/{message_id}"
+    return None
+
+
+def charge_for(reason: str | None, sample: str = "") -> str:
+    text = f"{reason or ''} {sample}".lower()
+    if "external-contact business solicitation" in text:
+        if "chatwork" in text or "チャットワーク" in text:
+            return "Chatwork誘導案件勧誘罪"
+        if "line" in text or "telegram" in text or "whatsapp" in text:
+            return "外部連絡先誘導案件勧誘罪"
+        return "外部連絡先つき案件勧誘罪"
+    if "message flood" in text:
+        return "短時間大量投稿罪"
+    if "duplicate message" in text:
+        return "同一文面連投罪"
+    if "excessive mentions" in text:
+        return "大量メンション罪"
+    return "サーバー迷惑行為罪"
+
+
 def collect_messages(guild: str, since: str, limit: int) -> tuple[list[dict], list[str], int]:
     channels_data = run_json([HISTORY, "list-channels", "--guild", guild])
     messages: list[dict] = []
@@ -227,7 +255,11 @@ def decide(messages: list[dict], now: dt.datetime) -> list[dict]:
                     "target_username": author.get("username"),
                     "target_display_name": author.get("display_name"),
                     "reason": reason,
+                    "charge": charge_for(reason, top_text),
                     "evidence_message_ids": [m.get("id") for m in evidence if m.get("id")],
+                    "evidence_links": [
+                        link for link in (evidence_link(m.get("guild_id") or "", m) for m in evidence) if link
+                    ],
                     "evidence_channels": sorted({m.get("_channel_name") or m.get("_channel_id") for m in evidence}),
                     "duplicate_sample": top_text[:120],
                 }
@@ -292,19 +324,22 @@ def format_report(report: dict) -> str:
             user = action.get("target_display_name") or action.get("target_username") or action.get("target_user_id")
             status = action.get("status")
             channel = ", ".join(action.get("evidence_channels") or [])
-            if status == "applied":
-                lines.append(
-                    f"- {user}: {action.get('duration')} timeout適用 "
-                    f"(理由: {action.get('reason')}, 解除予定: {action.get('until')})"
-                )
-            elif status == "dry_run":
-                lines.append(f"- {user}: dry-run検知 (理由: {action.get('reason')})")
-            else:
-                lines.append(f"- {user}: 実行失敗 (理由: {action.get('reason')}, error: {action.get('error')})")
+            charge = action.get("charge") or charge_for(action.get("reason"), action.get("duplicate_sample") or "")
+            links = action.get("evidence_links") or []
+            if not links and action.get("guild_id") and action.get("evidence_message_ids"):
+                links = [", ".join(action["evidence_message_ids"])]
+            lines.append(f"ユーザ名: {user}")
             if channel:
-                lines.append(f"  対象チャンネル: {channel}")
-            if action.get("evidence_message_ids"):
-                lines.append(f"  証拠message_id: {', '.join(action['evidence_message_ids'])}")
+                lines.append(f"対象チャンネル: {channel}")
+            lines.append(f"罪状: {charge}")
+            lines.append(f"証拠メッセージ: {links[0] if links else '不明'}")
+            if status == "applied":
+                lines.append(f"解除時間: {action.get('until')}")
+            elif status == "dry_run":
+                lines.append(f"解除時間: dry-runのため未適用")
+            else:
+                lines.append(f"解除時間: 実行失敗")
+                lines.append(f"エラー: {action.get('error')}")
     if errors:
         lines.append("取得エラーがありました。")
         for error in errors[:3]:
