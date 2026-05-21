@@ -77,6 +77,40 @@ To verify live symlinks and see pending git changes:
 
 `scripts/deploy.sh` is kept as a compatibility alias for `scripts/link-live.sh`.
 
+## Editing Workflow
+
+For managed files, edit the repo on the subMac:
+
+```bash
+cd /Users/nikenike/WorkSpace/nikechan-hermes-runtime
+```
+
+Because the live Hermes paths are symlinks, editing the live path or the repo
+path changes the same file for managed config/persona/memory/skills/plugins.
+
+Create a new git-managed skill with:
+
+```bash
+./scripts/new-skill.sh nikechandiscord my-skill
+```
+
+If Hermes or an operator already created a skill directly under the live profile,
+adopt it into git with:
+
+```bash
+./scripts/adopt-live-skill.sh nikechandiscord my-skill
+```
+
+Then commit and push:
+
+```bash
+./scripts/validate-no-secrets.sh
+git status
+git add profiles/nikechandiscord/skills/my-skill
+git commit -m "Add my skill"
+git push
+```
+
 ## Secret Check
 
 Before committing:
