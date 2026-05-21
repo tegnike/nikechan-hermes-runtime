@@ -22,8 +22,8 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `profiles/<profile>/memories/*.md`
 - `profiles/<profile>/scripts/` when present
 - `profiles/<profile>/cron/jobs.json` when present
-- `profiles/<profile>/skills/*/SKILL.md`
-- `profiles/<profile>/plugins/nikechan-discord-routing/`
+- `profiles/<profile>/skills/`
+- `profiles/<profile>/plugins/`
 - `profiles/<profile>/.env.example`
 
 ## Not Managed
@@ -88,10 +88,13 @@ Music/audio analysis is routed through `music-audio-analysis` and `gemini-audio-
 
 ## Live Management
 
-Hermes reads files from `~/.hermes`, but the managed files should be symlinked
-back to this repo. That makes this repo the live source of truth: editing a
-managed skill/config/persona file in this repo changes what Hermes reads after
-the gateway restarts.
+Hermes reads files from `~/.hermes`, but the managed profile files and whole
+`skills/` and `plugins/` directories are symlinked back to this repo. That makes
+this repo the live source of truth: editing a managed skill/config/persona file
+in this repo changes the live file. New skills created under either the repo
+path or the live `~/.hermes/profiles/<profile>/skills` path are the same
+git-visible files. The gateway still needs a restart when Hermes must rebuild
+its skill registry.
 
 Run this on the subMac after cloning this repo:
 
@@ -125,6 +128,8 @@ cd /Users/nikenike/WorkSpace/nikechan-hermes-runtime
 
 Because the live Hermes paths are symlinks, editing the live path or the repo
 path changes the same file for managed config/persona/memory/skills/plugins.
+Do not add new skill names to a deployment allowlist; the entire `skills/`
+directory is linked as one unit.
 
 Create a new git-managed skill with:
 
@@ -132,8 +137,7 @@ Create a new git-managed skill with:
 ./scripts/new-skill.sh nikechandiscord my-skill
 ```
 
-If Hermes or an operator already created a skill directly under the live profile,
-adopt it into git with:
+If an older, pre-symlink live skill exists outside the repo, adopt it into git with:
 
 ```bash
 ./scripts/adopt-live-skill.sh nikechandiscord my-skill

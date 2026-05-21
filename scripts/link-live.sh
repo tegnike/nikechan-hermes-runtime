@@ -7,17 +7,6 @@ profile_root="$hermes_root/profiles"
 bin_dir="$hermes_root/bin"
 backup_root="$hermes_root/backups/runtime-link-$(date +%Y%m%d-%H%M%S)"
 profiles=("nikechandiscord" "nikechanmain")
-managed_skills=(
-  "discord-summary"
-  "discord-message-search"
-  "discord-reminder"
-  "discord-freeze"
-  "discord-amnesty"
-  "music-audio-analysis"
-)
-managed_plugins=(
-  "nikechan-discord-routing"
-)
 
 backup_path_for() {
   local dst="$1"
@@ -77,22 +66,16 @@ replace_with_symlink "$repo_root/hermes-scripts" "$hermes_root/scripts"
 for profile in "${profiles[@]}"; do
   src_profile="$repo_root/profiles/$profile"
   dst_profile="$profile_root/$profile"
-  mkdir -p "$dst_profile/skills" "$dst_profile/plugins"
+  mkdir -p "$dst_profile"
 
   replace_with_symlink "$src_profile/config.yaml" "$dst_profile/config.yaml"
   replace_with_symlink "$src_profile/profile.yaml" "$dst_profile/profile.yaml"
   replace_with_symlink "$src_profile/SOUL.md" "$dst_profile/SOUL.md"
   replace_with_symlink "$src_profile/memories" "$dst_profile/memories"
+  replace_with_symlink "$src_profile/skills" "$dst_profile/skills"
+  replace_with_symlink "$src_profile/plugins" "$dst_profile/plugins"
   replace_with_symlink_if_present "$src_profile/scripts" "$dst_profile/scripts"
   replace_with_symlink_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
-
-  for skill in "${managed_skills[@]}"; do
-    replace_with_symlink "$src_profile/skills/$skill" "$dst_profile/skills/$skill"
-  done
-
-  for plugin in "${managed_plugins[@]}"; do
-    replace_with_symlink "$src_profile/plugins/$plugin" "$dst_profile/plugins/$plugin"
-  done
 
   if [[ ! -f "$dst_profile/.env" ]]; then
     cp -n "$src_profile/.env.example" "$dst_profile/.env.example"

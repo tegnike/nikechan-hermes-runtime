@@ -6,9 +6,9 @@ usage() {
 Usage:
   scripts/adopt-live-skill.sh PROFILE SKILL_NAME
 
-Move a live Hermes profile skill into this git repo and replace the live path
-with a symlink. Use this when Hermes or an operator created a new skill directly
-under ~/.hermes/profiles/PROFILE/skills/SKILL_NAME.
+Adopt an old live-created skill into this git repo. In the current setup the
+live skills directory itself is symlinked to this repo, so new live-created
+skills are already git-visible and usually do not need this command.
 
 Examples:
   scripts/adopt-live-skill.sh nikechandiscord my-new-skill
@@ -41,6 +41,19 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 hermes_root="${HERMES_ROOT:-$HOME/.hermes}"
 live="$hermes_root/profiles/$profile/skills/$skill"
 repo="$repo_root/profiles/$profile/skills/$skill"
+
+if [[ -L "$hermes_root/profiles/$profile/skills" ]]; then
+  current_dir="$(readlink "$hermes_root/profiles/$profile/skills")"
+  if [[ "$current_dir" == "$repo_root/profiles/$profile/skills" ]]; then
+    if [[ -e "$repo" || -L "$repo" ]]; then
+      echo "already managed by skills directory symlink: $repo"
+      git -C "$repo_root" status --short -- "$repo"
+      exit 0
+    fi
+    echo "skill does not exist in managed skills directory: $repo" >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -e "$live" && ! -L "$live" ]]; then
   echo "live skill does not exist: $live" >&2
