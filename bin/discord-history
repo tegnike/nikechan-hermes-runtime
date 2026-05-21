@@ -12,6 +12,39 @@ from pathlib import Path
 
 DISCORD_EPOCH_MS = 1420070400000
 API = "https://discord.com/api/v10"
+QUERY_DROP_PHRASES = (
+    "について",
+    "に関して",
+    "という",
+    "同じように",
+    "そのあとに",
+    "その後に",
+    "あとに",
+    "最近",
+    "作りました",
+    "作った",
+    "作成した",
+    "つくった",
+    "調べて",
+    "調査",
+    "探して",
+    "検索",
+    "教えて",
+    "ください",
+    "お願い",
+)
+QUERY_STOPWORDS = {
+    "さん",
+    "ちゃん",
+    "くん",
+    "氏",
+    "先生",
+    "キャラ",
+    "キャラクター",
+}
+QUERY_HONORIFICS_RE = re.compile(r"(さん|ちゃん|くん|氏|先生)")
+QUERY_ASCII_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{1,}")
+QUERY_JA_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fffー]{2,}")
 
 
 def load_env() -> dict:
@@ -108,6 +141,37 @@ def time_from_snowflake(snowflake: str) -> dt.datetime:
 
 def iso(ts: dt.datetime) -> str:
     return ts.astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def unique_preserve_order(values: list[str]) -> list[str]:
+    out = []
+    seen = set()
+    for value in values:
+        if value and value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
+
+
+def query_terms(query: str) -> list[str]:
+    raw = query.lower()
+    cleaned = QUERY_HONORIFICS_RE.sub(" ", raw)
+    for phrase in QUERY_DROP_PHRASES:
+        cleaned = cleaned.replace(phrase, " ")
+    cleaned = re.sub(r"[、。,.!?！？:：;；（）()【】「」『』\\[\\]<>]", " ", cleaned)
+
+    terms = QUERY_ASCII_RE.findall(cleaned)
+    for chunk in QUERY_JA_RE.findall(cleaned):
+        token = chunk.strip("のがはをにもでとへ")
+        if token in QUERY_STOPWORDS or len(token) < 2:
+            continue
+        terms.append(token)
+
+    if QUERY_ASCII_RE.search(raw) and "スキル" in raw:
+        terms.append("スキル")
+
+    terms = unique_preserve_order(terms)
+    return terms or [raw.strip()]
 
 
 def list_guilds():
@@ -243,6 +307,7 @@ def cmd_search(args):
     end = parse_time(args.to_time)
     data = fetch_messages(args.channel, args.guild, start, end, args.limit)
     q = args.query.lower()
+    terms = query_terms(args.query)
     results = []
     for msg in data["messages"]:
         hay = " ".join([
@@ -252,9 +317,10 @@ def cmd_search(args):
             " ".join(a.get("filename") or "" for a in msg.get("attachments", [])),
             " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
         ]).lower()
-        if q in hay:
+        if q in hay or all(term in hay for term in terms):
             results.append(msg)
     data["query"] = args.query
+    data["query_terms"] = terms
     data["results"] = results[: args.result_limit]
     data["result_count"] = len(data["results"])
     data.pop("messages", None)
@@ -267,6 +333,7 @@ def cmd_search_guild(args):
     start = parse_time(args.from_time)
     end = parse_time(args.to_time)
     query = args.query.lower()
+    terms = query_terms(args.query)
     results = []
     errors = []
     scanned_channels = 0
@@ -291,7 +358,7 @@ def cmd_search_guild(args):
                 " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
                 " ".join(e.get("description") or "" for e in msg.get("embeds", [])),
             ]).lower()
-            if query in hay:
+            if query in hay or all(term in hay for term in terms):
                 msg["channel"] = data["channel"]
                 results.append(msg)
 
@@ -302,6 +369,7 @@ def cmd_search_guild(args):
             "from": iso(start) if start else None,
             "to": iso(end) if end else None,
             "query": args.query,
+            "query_terms": terms,
             "scanned_channels": scanned_channels,
             "scanned_messages": scanned_messages,
             "result_count_total": len(results),
