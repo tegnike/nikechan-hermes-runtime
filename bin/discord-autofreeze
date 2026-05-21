@@ -282,6 +282,36 @@ def apply_freeze(guild: str, duration: str, decision: dict, dry_run: bool) -> di
     return result
 
 
+def format_report(report: dict) -> str:
+    actions = report.get("actions") or []
+    errors = report.get("errors") or []
+    lines = []
+    if actions:
+        lines.append("Discord自律モデレーションを実行しました。")
+        for action in actions:
+            user = action.get("target_display_name") or action.get("target_username") or action.get("target_user_id")
+            status = action.get("status")
+            channel = ", ".join(action.get("evidence_channels") or [])
+            if status == "applied":
+                lines.append(
+                    f"- {user}: {action.get('duration')} timeout適用 "
+                    f"(理由: {action.get('reason')}, 解除予定: {action.get('until')})"
+                )
+            elif status == "dry_run":
+                lines.append(f"- {user}: dry-run検知 (理由: {action.get('reason')})")
+            else:
+                lines.append(f"- {user}: 実行失敗 (理由: {action.get('reason')}, error: {action.get('error')})")
+            if channel:
+                lines.append(f"  対象チャンネル: {channel}")
+            if action.get("evidence_message_ids"):
+                lines.append(f"  証拠message_id: {', '.join(action['evidence_message_ids'])}")
+    if errors:
+        lines.append("取得エラーがありました。")
+        for error in errors[:3]:
+            lines.append(f"- {error}")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Discord timeout checker for AI Nikechan.")
     parser.add_argument("--guild", default=ENV.get("DISCORD_AUTOFREEZE_GUILD_ID") or ENV.get("DISCORD_GUILD_ID"))
@@ -318,7 +348,9 @@ def main():
         "actions": actions,
         "errors": errors[:10],
     }
-    if actions or errors or not args.quiet:
+    if actions or errors:
+        print(format_report(report))
+    elif not args.quiet:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     return 1 if any(a.get("status") == "error" for a in actions) else 0
 
