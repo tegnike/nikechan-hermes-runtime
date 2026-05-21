@@ -36,6 +36,7 @@ check_link_if_present() {
 check_link "$repo_root/bin/discord-history" "$hermes_root/bin/discord-history"
 check_link "$repo_root/bin/discord-freeze" "$hermes_root/bin/discord-freeze"
 check_link "$repo_root/bin/discord-amnesty" "$hermes_root/bin/discord-amnesty"
+check_link "$repo_root/bin/discord-reminder" "$hermes_root/bin/discord-reminder"
 check_link "$repo_root/bin/discord-autofreeze" "$hermes_root/bin/discord-autofreeze"
 check_link "$repo_root/bin/nikechan-emotion" "$hermes_root/bin/nikechan-emotion"
 check_link "$repo_root/bin/gemini-audio-analyze" "$hermes_root/bin/gemini-audio-analyze"

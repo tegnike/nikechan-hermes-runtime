@@ -28,6 +28,8 @@ SUNO_URL_RE = re.compile(r"https?://(?:www\.)?suno\.com/song/[0-9a-fA-F-]{32,36}
 DIRECT_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"]+\.(?:mp3|wav|m4a|flac|ogg|aac|mp4|webm)(?:\?[^\s<>\"]*)?", re.IGNORECASE)
 MAX_MUSIC_OUTPUT_CHARS = 40000
 AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
+REMINDER_RE = re.compile(r"(リマインダー?|リマインド|通知して|知らせて|教えて|言って|送って|投稿して)")
+REMINDER_TIME_RE = re.compile(r"(\d{1,4}\s*(?:分|時間|日)\s*後|半日後|今日|明日|明後日|毎日|毎朝|毎晩|毎夜|毎週\s*[月火水木金土日]曜?(?:日)?)")
 YOUTUBE_URL_RE = re.compile(r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s<>\"]+")
 ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b")
 ARXIV_CONTEXT_RE = re.compile(r"(arxiv|論文|paper|ペーパー)", re.IGNORECASE)
@@ -183,6 +185,14 @@ def _looks_like_search_request(text: str) -> bool:
     if _looks_like_music_audio_request(text):
         return False
     return bool(SEARCH_RE.search(text))
+
+
+def _looks_like_reminder_request(text: str) -> bool:
+    if not (REMINDER_RE.search(text) and REMINDER_TIME_RE.search(text)):
+        return False
+    if re.search(r"(凍結|タイムアウト|timeout|ban|kick|mute|削除)", text, re.IGNORECASE):
+        return False
+    return True
 
 
 def _looks_like_amnesty_request(text: str) -> bool:
@@ -621,6 +631,60 @@ def _rewrite_discord_search(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
+def _run_reminder(text: str, event: Any) -> tuple[str, list[str]]:
+    env = _load_env()
+    guild = _source_guild_id(event, env)
+    requester = _source_user_id(event)
+    message_id = _source_message_id(event) or ""
+    channel = _current_channel(event) or ""
+    helper = Path.home() / ".hermes" / "bin" / "discord-reminder"
+    args = [
+        str(helper),
+        "create",
+        "--text",
+        text,
+        "--channel",
+        channel,
+        "--guild",
+        guild or "",
+        "--requester-id",
+        requester or "",
+        "--source-message-id",
+        message_id,
+    ]
+
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    result = subprocess.run(args, text=True, capture_output=True, timeout=30, env=proc_env)
+    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    if result.returncode != 0:
+        payload = json.dumps(
+            {"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode},
+            ensure_ascii=False,
+        )
+        return payload, notes
+    return result.stdout.strip(), notes
+
+
+def _rewrite_discord_reminder(text: str, event: Any) -> dict[str, str] | None:
+    if not _looks_like_reminder_request(text):
+        return None
+    payload, notes = _run_reminder(text, event)
+    rewritten = (
+        "[DISCORD_REMINDER_RESULT]\n"
+        f"元の依頼: {text}\n"
+        + "\n".join(notes)
+        + "\n\n"
+        "以下は公開Discord向けの安全なリマインダー登録結果です。"
+        "cronやファイル操作権限を使ったとは説明せず、登録できたか、通知予定、通知先、本文だけを短く日本語で報告してください。"
+        "error がある場合は、作成されていないことと理由だけを短く伝えてください。\n\n"
+        "```json\n"
+        f"{payload}\n"
+        "```"
+    )
+    return {"action": "rewrite", "text": rewritten}
+
+
 def _run_amnesty(text: str, event: Any) -> tuple[str, list[str]]:
     env = _load_env()
     guild = _source_guild_id(event, env)
@@ -790,6 +854,10 @@ def _rewrite(event: Any) -> dict[str, str] | None:
             return routed
 
     routed = _rewrite_discord_amnesty(text, event)
+    if routed:
+        return routed
+
+    routed = _rewrite_discord_reminder(text, event)
     if routed:
         return routed
 

@@ -61,6 +61,7 @@ mkdir -p "$bin_dir" "$profile_root"
 replace_with_symlink "$repo_root/bin/discord-history" "$bin_dir/discord-history"
 replace_with_symlink "$repo_root/bin/discord-freeze" "$bin_dir/discord-freeze"
 replace_with_symlink "$repo_root/bin/discord-amnesty" "$bin_dir/discord-amnesty"
+replace_with_symlink "$repo_root/bin/discord-reminder" "$bin_dir/discord-reminder"
 replace_with_symlink "$repo_root/bin/discord-autofreeze" "$bin_dir/discord-autofreeze"
 replace_with_symlink "$repo_root/bin/nikechan-emotion" "$bin_dir/nikechan-emotion"
 replace_with_symlink "$repo_root/bin/gemini-audio-analyze" "$bin_dir/gemini-audio-analyze"
@@ -88,6 +89,8 @@ for profile in "${profiles[@]}"; do
     echo "missing $dst_profile/.env; copied .env.example only" >&2
   fi
 done
+
+"$repo_root/scripts/ensure-discord-reminder-cron.sh" nikechandiscord
 
 if [[ "${RESTART:-0}" == "1" ]]; then
   for profile in "${profiles[@]}"; do
