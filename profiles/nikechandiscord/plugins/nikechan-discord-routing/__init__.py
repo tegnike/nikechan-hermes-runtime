@@ -23,6 +23,7 @@ SUMMARY_RE = re.compile(r"(要約|まとめ|どんな話|何があった|内容|
 DISCORD_CONTEXT_RE = re.compile(r"(Discord|ディスコ|チャンネル|<#\d+>|#\S+)")
 TIME_CONTEXT_RE = re.compile(r"(ここ|直近|過去|今日|昨日|数時間|履歴|会話|ログ)")
 SEARCH_RE = re.compile(r"(調べて|調査|探して|検索|ログ探|履歴探|経緯|いつ.*話|誰.*話)")
+AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
 YOUTUBE_URL_RE = re.compile(r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s<>\"]+")
 ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b")
 ARXIV_CONTEXT_RE = re.compile(r"(arxiv|論文|paper|ペーパー)", re.IGNORECASE)
@@ -70,6 +71,24 @@ def _first_allowed_guild(env: dict[str, str]) -> str | None:
         if guild_id:
             return guild_id
     return env.get("DISCORD_GUILD_ID") or None
+
+
+def _source_user_id(event: Any) -> str | None:
+    source = getattr(event, "source", None)
+    value = getattr(source, "user_id", None)
+    return str(value) if value else None
+
+
+def _source_guild_id(event: Any, env: dict[str, str]) -> str | None:
+    source = getattr(event, "source", None)
+    value = getattr(source, "guild_id", None)
+    return str(value) if value else _first_allowed_guild(env)
+
+
+def _source_message_id(event: Any) -> str | None:
+    source = getattr(event, "source", None)
+    value = getattr(source, "message_id", None) or getattr(event, "message_id", None)
+    return str(value) if value else None
 
 
 def _tz(env: dict[str, str]):
@@ -154,6 +173,25 @@ def _looks_like_search_request(text: str) -> bool:
     if YOUTUBE_URL_RE.search(text) or ARXIV_CONTEXT_RE.search(text):
         return False
     return bool(SEARCH_RE.search(text))
+
+
+def _looks_like_amnesty_request(text: str) -> bool:
+    if not AMNESTY_RE.search(text):
+        return False
+    return bool(re.search(r"(凍結|timeout|タイムアウト|謝罪|反省文|恩赦)", text, re.IGNORECASE))
+
+
+def _amnesty_target_hint(text: str) -> str:
+    mention = re.search(r"<@!?(\d+)>", text)
+    if mention:
+        return mention.group(1)
+    raw = re.search(r"(?:user[-_ ]?id|ユーザーid|対象)[:：\s]+(\d{15,25})", text, flags=re.I)
+    if raw:
+        return raw.group(1)
+    named = re.search(r"対象[:：\s]+([^\n、。]+)", text)
+    if named:
+        return named.group(1).strip()[:80]
+    return ""
 
 
 def _clean_query_candidate(value: str) -> str:
@@ -440,6 +478,46 @@ def _rewrite_discord_search(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
+def _run_amnesty(text: str, event: Any) -> tuple[str, list[str]]:
+    env = _load_env()
+    guild = _source_guild_id(event, env)
+    requester = _source_user_id(event)
+    message_id = _source_message_id(event) or ""
+    helper = Path.home() / ".hermes" / "bin" / "discord-amnesty"
+    args = [str(helper), "evaluate", "--guild", guild or "", "--apology", text, "--requester-id", requester or "", "--source-message-id", message_id, "--apply", "--json"]
+    target = _amnesty_target_hint(text)
+    if target:
+        args += ["--target", target]
+
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    result = subprocess.run(args, text=True, capture_output=True, timeout=60, env=proc_env)
+    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    if result.returncode != 0:
+        payload = json.dumps({"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode}, ensure_ascii=False)
+        return payload, notes
+    return result.stdout.strip(), notes
+
+
+def _rewrite_discord_amnesty(text: str, event: Any) -> dict[str, str] | None:
+    if not _looks_like_amnesty_request(text):
+        return None
+    payload, notes = _run_amnesty(text, event)
+    rewritten = (
+        "[DISCORD_AMNESTY_RESULT]\n"
+        f"元の依頼: {text}\n"
+        + "\n".join(notes)
+        + "\n\n"
+        "以下はDiscord APIで投稿者権限を確認したうえで実行した、凍結恩赦判定の結果です。"
+        "結果に error がある場合は、解除や短縮は実行されていません。"
+        "このJSONだけを根拠に、短く日本語で報告してください。一般ユーザー本人からの解除依頼は受け付けないことを説明してください。\n\n"
+        "```json\n"
+        f"{payload}\n"
+        "```"
+    )
+    return {"action": "rewrite", "text": rewritten}
+
+
 def _rewrite(event: Any) -> dict[str, str] | None:
     text = getattr(event, "text", "") or ""
     if not isinstance(text, str):
@@ -449,6 +527,10 @@ def _rewrite(event: Any) -> dict[str, str] | None:
         routed = handler(text)
         if routed:
             return routed
+
+    routed = _rewrite_discord_amnesty(text, event)
+    if routed:
+        return routed
 
     routed = _rewrite_discord_search(text, event)
     if routed:

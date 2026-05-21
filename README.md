@@ -10,6 +10,7 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `bin/`
   - `discord-history`
   - `discord-freeze`
+  - `discord-amnesty`
   - `discord-autofreeze`
   - `nikechan-emotion`
   - `gemini-audio-analyze`
@@ -81,7 +82,7 @@ low-level prepare/apply helper, while `discord-autofreeze` is the cron-only
 autonomous checker. It only acts on spam signals such as message floods,
 duplicate repeats, excessive mentions, and unsolicited external-contact
 business solicitation inside the allowed guild. The default timeout duration is
-12 hours.
+12 hours. Admin-only amnesty requests can shorten or release a timeout when a moderator shares a concrete apology; requester permissions are checked against Discord before any action is applied.
 
 ## Live Management
 

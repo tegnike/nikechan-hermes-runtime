@@ -4,7 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 hermes_root="${HERMES_ROOT:-$HOME/.hermes}"
 profiles=("nikechandiscord" "nikechanmain")
-managed_skills=("discord-summary" "discord-message-search" "discord-reminder" "discord-freeze" "music-audio-analysis")
+managed_skills=("discord-summary" "discord-message-search" "discord-reminder" "discord-freeze"
+  "discord-amnesty" "music-audio-analysis")
 managed_plugins=("nikechan-discord-routing")
 failed=0
 
@@ -36,6 +37,7 @@ check_link_if_present() {
 
 check_link "$repo_root/bin/discord-history" "$hermes_root/bin/discord-history"
 check_link "$repo_root/bin/discord-freeze" "$hermes_root/bin/discord-freeze"
+check_link "$repo_root/bin/discord-amnesty" "$hermes_root/bin/discord-amnesty"
 check_link "$repo_root/bin/discord-autofreeze" "$hermes_root/bin/discord-autofreeze"
 check_link "$repo_root/bin/nikechan-emotion" "$hermes_root/bin/nikechan-emotion"
 check_link "$repo_root/bin/gemini-audio-analyze" "$hermes_root/bin/gemini-audio-analyze"
