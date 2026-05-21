@@ -250,6 +250,122 @@ def next_recurrence(current: dt.datetime, recurrence: dict) -> dt.datetime | Non
     return None
 
 
+
+def active_reminders(data: dict) -> list[dict]:
+    return [r for r in data.get("reminders", []) if r.get("status") == "scheduled"]
+
+
+def text_minutes(text: str) -> int | None:
+    m = re.search(r"(\d{1,4})\s*分", text)
+    return int(m.group(1)) if m else None
+
+
+def text_schedule_kind(text: str) -> str | None:
+    if re.search(r"毎日|毎朝|毎晩|毎夜", text):
+        return "daily"
+    if re.search(r"毎週", text):
+        return "weekly"
+    return None
+
+
+def quoted_keyword(text: str) -> str:
+    m = re.search(r"[「『\"]([^」』\"]{1,80})[」』\"]", text)
+    if m:
+        return m.group(1).strip()
+    cleaned = strip_bot_mentions(text)
+    cleaned = re.sub(r"リマインダー?|リマインド|削除|消して|止めて|停止|解除|キャンセル|一覧|見せて|確認|できる|可能|して|ください|これ|それ|いま|今|の|を|は|って|だけど", " ", cleaned)
+    cleaned = re.sub(r"\d{1,4}\s*(?:分|時間|日)\s*(?:後|ごと|おき|毎|まい)?", " ", cleaned)
+    cleaned = re.sub(r"毎日|毎朝|毎晩|毎夜|毎週\s*[月火水木金土日]?曜?(?:日)?", " ", cleaned)
+    words = [w for w in re.split(r"\s+", cleaned.strip()) if len(w) >= 2]
+    return words[0][:80] if words else ""
+
+
+def reminder_matches(rem: dict, text: str, channel: str, requester_id: str, all_users: bool = False) -> bool:
+    if rem.get("status") != "scheduled":
+        return False
+    if channel and str(rem.get("channel_id") or "") != channel:
+        return False
+    if not all_users and requester_id and str(rem.get("requester_id") or "") != requester_id:
+        return False
+    if re.search(r"全部|すべて|全て", text):
+        return True
+
+    minute = text_minutes(text)
+    kind = text_schedule_kind(text)
+    keyword = quoted_keyword(text)
+    criteria = False
+
+    if minute is not None:
+        criteria = True
+        if f"{minute}分" not in str(rem.get("schedule_label") or ""):
+            return False
+    if kind is not None:
+        criteria = True
+        recurrence = rem.get("recurrence") if isinstance(rem.get("recurrence"), dict) else {}
+        if recurrence.get("kind") != kind:
+            return False
+    if keyword:
+        criteria = True
+        if keyword not in str(rem.get("body") or "") and keyword not in str(rem.get("schedule_label") or ""):
+            return False
+
+    return not criteria or criteria
+
+
+def public_reminder(rem: dict) -> dict:
+    return {
+        "id": rem.get("id"),
+        "body": rem.get("body"),
+        "channel_id": rem.get("channel_id"),
+        "channel_label": rem.get("channel_label"),
+        "next_run_at": rem.get("next_run_at"),
+        "schedule_label": rem.get("schedule_label"),
+        "timezone": rem.get("timezone"),
+        "mode": rem.get("mode"),
+        "recurrence": rem.get("recurrence"),
+    }
+
+
+def list_filtered(args: argparse.Namespace) -> int:
+    data = load_state()
+    reminders = active_reminders(data)
+    if args.channel:
+        reminders = [r for r in reminders if str(r.get("channel_id") or "") == args.channel]
+    if args.requester_id:
+        reminders = [r for r in reminders if str(r.get("requester_id") or "") == args.requester_id]
+    print(json.dumps({"ok": True, "reminders": [public_reminder(r) for r in reminders]}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cancel(args: argparse.Namespace) -> int:
+    with state_lock() as _lock:
+        data = load_state()
+        matches = [
+            rem for rem in active_reminders(data)
+            if reminder_matches(rem, args.text, args.channel or "", args.requester_id or "", args.all_users)
+        ]
+        if not matches:
+            print(json.dumps({"ok": True, "action": "none", "cancelled": [], "matched": []}, ensure_ascii=False, indent=2))
+            return 0
+        if len(matches) > 1 and not re.search(r"全部|すべて|全て", args.text):
+            print(json.dumps({"ok": True, "action": "ambiguous", "cancelled": [], "matched": [public_reminder(r) for r in matches]}, ensure_ascii=False, indent=2))
+            return 0
+        if args.dry_run:
+            print(json.dumps({"ok": True, "action": "dry_run", "cancelled": [], "matched": [public_reminder(r) for r in matches]}, ensure_ascii=False, indent=2))
+            return 0
+        cancelled = []
+        now = iso(now_local())
+        for rem in matches:
+            rem["status"] = "cancelled"
+            rem["cancelled_at"] = now
+            rem["updated_at"] = now
+            rem["cancelled_by"] = args.requester_id or ""
+            cancelled.append(public_reminder(rem))
+        save_state(data)
+    print(json.dumps({"ok": True, "action": "cancelled", "cancelled": cancelled, "matched": cancelled}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def create(args: argparse.Namespace) -> int:
     run_at, schedule_label, recurrence, mode = parse_schedule(args.text)
     channel_id, channel_label = target_channel(args.text, args.channel or "")
@@ -388,7 +504,17 @@ def main() -> int:
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--all", action="store_true")
-    p_list.set_defaults(func=list_reminders)
+    p_list.add_argument("--channel", default="")
+    p_list.add_argument("--requester-id", default="")
+    p_list.set_defaults(func=list_filtered)
+
+    p_cancel = sub.add_parser("cancel")
+    p_cancel.add_argument("--text", required=True)
+    p_cancel.add_argument("--channel", default="")
+    p_cancel.add_argument("--requester-id", default="")
+    p_cancel.add_argument("--all-users", action="store_true")
+    p_cancel.add_argument("--dry-run", action="store_true")
+    p_cancel.set_defaults(func=cancel)
 
     args = parser.parse_args()
     try:

@@ -29,6 +29,9 @@ DIRECT_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"]+\.(?:mp3|wav|m4a|flac|ogg|
 MAX_MUSIC_OUTPUT_CHARS = 40000
 AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
 REMINDER_RE = re.compile(r"(リマインダー?|リマインド|通知して|知らせて|教えて|言って|送って|投稿して)")
+REMINDER_DELETE_RE = re.compile(r"(リマインダー?|リマインド).*(削除|消して|止めて|停止|解除|キャンセル)|(?:削除|消して|止めて|停止|解除|キャンセル).*(リマインダー?|リマインド)")
+REMINDER_LIST_RE = re.compile(r"(リマインダー?|リマインド).*(一覧|リスト|確認|見せて|ある|残って)")
+REMINDER_DELETE_QUESTION_RE = re.compile(r"(リマインダー?|リマインド).*(削除|消す|止める|停止|解除|キャンセル).*(できる|可能|\?)")
 REMINDER_TIME_RE = re.compile(r"(\d{1,4}\s*(?:分|時間|日)\s*後|半日後|今日|明日|明後日|毎日|毎朝|毎晩|毎夜|毎週\s*[月火水木金土日]曜?(?:日)?)")
 YOUTUBE_URL_RE = re.compile(r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s<>\"]+")
 ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b")
@@ -185,6 +188,10 @@ def _looks_like_search_request(text: str) -> bool:
     if _looks_like_music_audio_request(text):
         return False
     return bool(SEARCH_RE.search(text))
+
+
+def _looks_like_reminder_management_request(text: str) -> bool:
+    return bool(REMINDER_DELETE_RE.search(text) or REMINDER_LIST_RE.search(text) or REMINDER_DELETE_QUESTION_RE.search(text))
 
 
 def _looks_like_reminder_request(text: str) -> bool:
@@ -631,6 +638,52 @@ def _rewrite_discord_search(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
+def _run_reminder_management(text: str, event: Any) -> tuple[str, list[str]]:
+    env = _load_env()
+    requester = _source_user_id(event)
+    channel = _current_channel(event) or ""
+    helper = Path.home() / ".hermes" / "bin" / "discord-reminder"
+
+    is_delete = bool(REMINDER_DELETE_RE.search(text) or REMINDER_DELETE_QUESTION_RE.search(text))
+    is_question = bool(REMINDER_DELETE_QUESTION_RE.search(text)) and not re.search(r"(削除して|消して|止めて|停止して|解除して|キャンセルして)", text)
+    if is_delete:
+        args = [str(helper), "cancel", "--text", text, "--channel", channel, "--requester-id", requester or ""]
+        if is_question:
+            args.append("--dry-run")
+    else:
+        args = [str(helper), "list", "--channel", channel, "--requester-id", requester or ""]
+
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    result = subprocess.run(args, text=True, capture_output=True, timeout=30, env=proc_env)
+    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    if result.returncode != 0:
+        payload = json.dumps({"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode}, ensure_ascii=False)
+        return payload, notes
+    return result.stdout.strip(), notes
+
+
+def _rewrite_discord_reminder_management(text: str, event: Any) -> dict[str, str] | None:
+    if not _looks_like_reminder_management_request(text):
+        return None
+    payload, notes = _run_reminder_management(text, event)
+    rewritten = (
+        "[DISCORD_REMINDER_MANAGEMENT_RESULT]\n"
+        f"元の依頼: {text}\n"
+        + "\n".join(notes)
+        + "\n\n"
+        "以下は公開Discord向けの安全なリマインダー管理結果です。"
+        "通常チャットからcronやファイルを直接操作したとは説明しないでください。"
+        "action=cancelled なら削除済み、action=dry_run なら削除可能な候補、action=ambiguous なら候補が複数あり絞り込みが必要、"
+        "action=none または reminders が空なら該当する登録済みリマインダーはない、と短く日本語で答えてください。"
+        "なお、これはdiscord-reminder専用キューの管理であり、10分ごとの会話要約cronなど別系統のcronはリマインダーとして扱わないでください。\n\n"
+        "```json\n"
+        f"{payload}\n"
+        "```"
+    )
+    return {"action": "rewrite", "text": rewritten}
+
+
 def _run_reminder(text: str, event: Any) -> tuple[str, list[str]]:
     env = _load_env()
     guild = _source_guild_id(event, env)
@@ -854,6 +907,10 @@ def _rewrite(event: Any) -> dict[str, str] | None:
             return routed
 
     routed = _rewrite_discord_amnesty(text, event)
+    if routed:
+        return routed
+
+    routed = _rewrite_discord_reminder_management(text, event)
     if routed:
         return routed
 
