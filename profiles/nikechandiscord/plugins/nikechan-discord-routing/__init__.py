@@ -388,6 +388,17 @@ def _discord_reaction_rest_later(event: Any, emoji: str, *, remove: bool = False
     thread.start()
 
 
+def _finalize_skip_reaction_later(event: Any, delay: float = 3.0) -> None:
+    def worker() -> None:
+        time.sleep(delay)
+        _discord_reaction_rest(event, "👀", remove=True)
+        _discord_reaction_rest(event, "✅", remove=True)
+        _discord_reaction_rest(event, "👍")
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+
+
 def _bot_was_mentioned(event: Any) -> bool:
     raw = getattr(event, "raw_message", None)
     mentions = getattr(raw, "mentions", None) or []
@@ -1465,7 +1476,7 @@ def register(ctx):
             if not decision.get("reply"):
                 _discord_reaction_rest(event, "👀", remove=True)
                 _discord_reaction_rest(event, "👍")
-                _discord_reaction_rest_later(event, "✅", remove=True)
+                _finalize_skip_reaction_later(event)
                 _silent_ingest(event, session_store)
                 logger.info(
                     "nikechan-discord-routing should_reply skip: confidence=%s reason=%s",
