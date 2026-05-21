@@ -11,6 +11,8 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
   - `discord-history`
   - `discord-freeze`
   - `nikechan-emotion`
+- `hermes-scripts/`
+  - scripts linked to `~/.hermes/scripts`
 - `profiles/<profile>/config.yaml`
 - `profiles/<profile>/SOUL.md`
 - `profiles/<profile>/memories/*.md`

@@ -29,6 +29,7 @@ check_link() {
 check_link "$repo_root/bin/discord-history" "$hermes_root/bin/discord-history"
 check_link "$repo_root/bin/discord-freeze" "$hermes_root/bin/discord-freeze"
 check_link "$repo_root/bin/nikechan-emotion" "$hermes_root/bin/nikechan-emotion"
+check_link "$repo_root/hermes-scripts" "$hermes_root/scripts"
 
 for profile in "${profiles[@]}"; do
   src_profile="$repo_root/profiles/$profile"
