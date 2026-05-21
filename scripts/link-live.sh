@@ -78,7 +78,7 @@ for profile in "${profiles[@]}"; do
   replace_with_symlink "$src_profile/memories" "$dst_profile/memories"
   mkdir -p "$dst_profile/skills" "$dst_profile/plugins"
   replace_with_symlink_if_present "$src_profile/scripts" "$dst_profile/scripts"
-  replace_with_symlink_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
+  "$repo_root/scripts/sync-cron-jobs.sh" "$profile"
 
   for plugin in "${managed_plugins[@]}"; do
     replace_with_symlink "$src_profile/plugins/$plugin" "$dst_profile/plugins/$plugin"

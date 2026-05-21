@@ -56,7 +56,14 @@ for profile in "${profiles[@]}"; do
     failed=1
   fi
   check_link_if_present "$src_profile/scripts" "$dst_profile/scripts"
-  check_link_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
+  if [[ -f "$src_profile/cron/jobs.template.json" ]]; then
+    if [[ -f "$dst_profile/cron/jobs.json" && ! -L "$dst_profile/cron/jobs.json" ]]; then
+      echo "ok: $dst_profile/cron/jobs.json (runtime state from template)"
+    else
+      echo "missing runtime cron jobs file: $dst_profile/cron/jobs.json"
+      failed=1
+    fi
+  fi
   for plugin in "${managed_plugins[@]}"; do
     check_link "$src_profile/plugins/$plugin" "$dst_profile/plugins/$plugin"
   done

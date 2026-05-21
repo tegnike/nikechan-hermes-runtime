@@ -20,16 +20,16 @@
       "schedule_display": "every 5m",
       "repeat": {
         "times": null,
-        "completed": 125
+        "completed": 0
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-05-21T16:40:00+09:00",
-      "next_run_at": "2026-05-22T05:09:38.711193+09:00",
-      "last_run_at": "2026-05-22T05:04:38.711193+09:00",
-      "last_status": "ok",
+      "next_run_at": null,
+      "last_run_at": null,
+      "last_status": null,
       "last_error": null,
       "last_delivery_error": null,
       "deliver": "discord:1404724174890602496",
@@ -65,16 +65,16 @@
       "schedule_display": "every 1m",
       "repeat": {
         "times": null,
-        "completed": 43
+        "completed": 0
       },
       "enabled": true,
       "state": "scheduled",
       "paused_at": null,
       "paused_reason": null,
       "created_at": "2026-05-21T21:16:27.665145+02:00",
-      "next_run_at": "2026-05-22T05:08:39.321442+09:00",
-      "last_run_at": "2026-05-22T05:07:39.321442+09:00",
-      "last_status": "ok",
+      "next_run_at": null,
+      "last_run_at": null,
+      "last_status": null,
       "last_error": null,
       "last_delivery_error": null,
       "deliver": "discord:1404724174890602496",
@@ -91,5 +91,5 @@
       "profile": null
     }
   ],
-  "updated_at": "2026-05-21T22:07:49.207929+02:00"
+  "updated_at": null
 }

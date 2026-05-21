@@ -10,6 +10,7 @@ __pycache__/
 **/sessions/
 **/logs/
 **/*.lock
+profiles/*/cron/jobs.json
 
 # Local scratch
 tmp/
