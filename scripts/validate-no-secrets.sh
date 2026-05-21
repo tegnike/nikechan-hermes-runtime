@@ -11,6 +11,7 @@ patterns=(
   'apiKey'
   'DASHSCOPE_API_KEY=sk-'
   'ALIBABA_CODING_PLAN_API_KEY=sk-'
+  'AIza[0-9A-Za-z_-]{30,}'
 )
 
 failed=0

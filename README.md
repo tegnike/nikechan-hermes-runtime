@@ -12,6 +12,7 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
   - `discord-freeze`
   - `discord-autofreeze`
   - `nikechan-emotion`
+  - `gemini-audio-analyze`
 - `hermes-scripts/`
   - scripts linked to `~/.hermes/scripts`
 - `profiles/<profile>/config.yaml`
@@ -29,6 +30,7 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `.env` actual files
 - Discord bot tokens
 - Alibaba/DashScope API keys
+- Google Gemini API keys
 - `auth.json`
 - `state.db`
 - `sessions/`

@@ -12,6 +12,7 @@ managed_skills=(
   "discord-message-search"
   "discord-reminder"
   "discord-freeze"
+  "music-audio-analysis"
 )
 managed_plugins=(
   "nikechan-discord-routing"
@@ -68,6 +69,7 @@ replace_with_symlink "$repo_root/bin/discord-history" "$bin_dir/discord-history"
 replace_with_symlink "$repo_root/bin/discord-freeze" "$bin_dir/discord-freeze"
 replace_with_symlink "$repo_root/bin/discord-autofreeze" "$bin_dir/discord-autofreeze"
 replace_with_symlink "$repo_root/bin/nikechan-emotion" "$bin_dir/nikechan-emotion"
+replace_with_symlink "$repo_root/bin/gemini-audio-analyze" "$bin_dir/gemini-audio-analyze"
 replace_with_symlink "$repo_root/hermes-scripts" "$hermes_root/scripts"
 
 for profile in "${profiles[@]}"; do
