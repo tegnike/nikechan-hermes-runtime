@@ -156,10 +156,26 @@ def _looks_like_search_request(text: str) -> bool:
     return bool(SEARCH_RE.search(text))
 
 
+def _clean_query_candidate(value: str) -> str:
+    candidate = value.strip(" 　。、！？!?:：")
+
+    # Drop conversational preambles such as:
+    # "システムアプデしたから、ぷにけ"
+    for sep in ("、", "。", ",", "，", "！", "!", "？", "?"):
+        if sep in candidate:
+            candidate = candidate.rsplit(sep, 1)[-1].strip(" 　")
+
+    for marker in ("から", "ので", "ため"):
+        if marker in candidate and len(candidate) > 12:
+            candidate = candidate.rsplit(marker, 1)[-1].strip(" 　、。")
+
+    return candidate[:80]
+
+
 def _search_query(text: str) -> str:
     quoted = re.search(r"[「『\"]([^」』\"]{1,80})[」』\"]", text)
     if quoted:
-        return quoted.group(1).strip()
+        return _clean_query_candidate(quoted.group(1))
 
     patterns = [
         r"(.+?)という.+?(?:調べて|調査|探して|検索)",
@@ -170,9 +186,9 @@ def _search_query(text: str) -> str:
     for pattern in patterns:
         m = re.search(pattern, text)
         if m:
-            candidate = m.group(1).strip(" 　。、！？!?:：")
+            candidate = _clean_query_candidate(m.group(1))
             if candidate:
-                return candidate[:80]
+                return candidate
 
     cleaned = re.sub(r"(Discord|ディスコ|チャンネル|ログ|履歴|調べて|調査|探して|検索|して|ください)", " ", text)
     cleaned = re.sub(r"<#\d+>|#\S+", " ", cleaned)
