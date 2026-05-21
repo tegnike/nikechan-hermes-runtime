@@ -392,8 +392,8 @@ def _finalize_skip_reaction_later(event: Any, delay: float = 3.0) -> None:
     def worker() -> None:
         time.sleep(delay)
         _discord_reaction_rest(event, "👀", remove=True)
-        _discord_reaction_rest(event, "✅", remove=True)
-        _discord_reaction_rest(event, "👍")
+        _discord_reaction_rest(event, "👍", remove=True)
+        _discord_reaction_rest(event, "✅")
 
     thread = threading.Thread(target=worker, daemon=True)
     thread.start()
@@ -1475,7 +1475,7 @@ def register(ctx):
             decision = _should_reply(event)
             if not decision.get("reply"):
                 _discord_reaction_rest(event, "👀", remove=True)
-                _discord_reaction_rest(event, "👍")
+                _discord_reaction_rest(event, "✅")
                 _finalize_skip_reaction_later(event)
                 _silent_ingest(event, session_store)
                 logger.info(
