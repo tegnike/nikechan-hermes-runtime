@@ -4,6 +4,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 hermes_root="${HERMES_ROOT:-$HOME/.hermes}"
 profiles=("nikechandiscord" "nikechanmain")
+managed_plugins=("nikechan-discord-routing")
 failed=0
 
 check_link() {
@@ -47,10 +48,17 @@ for profile in "${profiles[@]}"; do
   check_link "$src_profile/profile.yaml" "$dst_profile/profile.yaml"
   check_link "$src_profile/SOUL.md" "$dst_profile/SOUL.md"
   check_link "$src_profile/memories" "$dst_profile/memories"
-  check_link "$src_profile/skills" "$dst_profile/skills"
-  check_link "$src_profile/plugins" "$dst_profile/plugins"
+  if grep -Fq "$src_profile/skills" "$src_profile/config.yaml"; then
+    echo "ok: $src_profile/config.yaml external_dirs includes repo skills"
+  else
+    echo "missing external_dirs repo skills: $src_profile/config.yaml"
+    failed=1
+  fi
   check_link_if_present "$src_profile/scripts" "$dst_profile/scripts"
   check_link_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
+  for plugin in "${managed_plugins[@]}"; do
+    check_link "$src_profile/plugins/$plugin" "$dst_profile/plugins/$plugin"
+  done
 done
 
 echo

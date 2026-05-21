@@ -88,13 +88,15 @@ Music/audio analysis is routed through `music-audio-analysis` and `gemini-audio-
 
 ## Live Management
 
-Hermes reads files from `~/.hermes`, but the managed profile files and whole
-`skills/` and `plugins/` directories are symlinked back to this repo. That makes
-this repo the live source of truth: editing a managed skill/config/persona file
-in this repo changes the live file. New skills created under either the repo
-path or the live `~/.hermes/profiles/<profile>/skills` path are the same
-git-visible files. The gateway still needs a restart when Hermes must rebuild
-its skill registry.
+Hermes reads files from `~/.hermes`, but config points `skills.external_dirs`
+at this repo's `profiles/<profile>/skills`. That makes this repo the source of
+truth for Nikechan custom skills without git-managing Hermes bundled skills.
+Editing a custom skill in this repo changes what Hermes reads after the gateway
+restarts.
+
+Do not symlink the whole live `~/.hermes/profiles/<profile>/skills` directory
+to this repo. Hermes may populate bundled/runtime skills there, and linking the
+whole directory pollutes the repo with Hermes-managed libraries.
 
 Run this on the subMac after cloning this repo:
 
@@ -126,10 +128,9 @@ For managed files, edit the repo on the subMac:
 cd /Users/nikenike/WorkSpace/nikechan-hermes-runtime
 ```
 
-Because the live Hermes paths are symlinks, editing the live path or the repo
-path changes the same file for managed config/persona/memory/skills/plugins.
-Do not add new skill names to a deployment allowlist; the entire `skills/`
-directory is linked as one unit.
+Config/persona/memory files are live symlinks. Custom skills are read directly
+from the repo through `skills.external_dirs`, so new skill names do not need to
+be added to a deployment allowlist.
 
 Create a new git-managed skill with:
 
@@ -137,7 +138,8 @@ Create a new git-managed skill with:
 ./scripts/new-skill.sh nikechandiscord my-skill
 ```
 
-If an older, pre-symlink live skill exists outside the repo, adopt it into git with:
+If an operator creates a skill directly under the live profile skills directory,
+adopt it into git with:
 
 ```bash
 ./scripts/adopt-live-skill.sh nikechandiscord my-skill

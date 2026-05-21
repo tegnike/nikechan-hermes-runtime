@@ -7,6 +7,9 @@ profile_root="$hermes_root/profiles"
 bin_dir="$hermes_root/bin"
 backup_root="$hermes_root/backups/runtime-link-$(date +%Y%m%d-%H%M%S)"
 profiles=("nikechandiscord" "nikechanmain")
+managed_plugins=(
+  "nikechan-discord-routing"
+)
 
 backup_path_for() {
   local dst="$1"
@@ -72,10 +75,13 @@ for profile in "${profiles[@]}"; do
   replace_with_symlink "$src_profile/profile.yaml" "$dst_profile/profile.yaml"
   replace_with_symlink "$src_profile/SOUL.md" "$dst_profile/SOUL.md"
   replace_with_symlink "$src_profile/memories" "$dst_profile/memories"
-  replace_with_symlink "$src_profile/skills" "$dst_profile/skills"
-  replace_with_symlink "$src_profile/plugins" "$dst_profile/plugins"
+  mkdir -p "$dst_profile/skills" "$dst_profile/plugins"
   replace_with_symlink_if_present "$src_profile/scripts" "$dst_profile/scripts"
   replace_with_symlink_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
+
+  for plugin in "${managed_plugins[@]}"; do
+    replace_with_symlink "$src_profile/plugins/$plugin" "$dst_profile/plugins/$plugin"
+  done
 
   if [[ ! -f "$dst_profile/.env" ]]; then
     cp -n "$src_profile/.env.example" "$dst_profile/.env.example"
