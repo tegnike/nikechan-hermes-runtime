@@ -48,21 +48,34 @@ model:
   provider: alibaba-coding-plan
 ```
 
-## Deploy
+## Live Management
+
+Hermes reads files from `~/.hermes`, but the managed files should be symlinked
+back to this repo. That makes this repo the live source of truth: editing a
+managed skill/config/persona file in this repo changes what Hermes reads after
+the gateway restarts.
 
 Run this on the subMac after cloning this repo:
 
 ```bash
-./scripts/deploy.sh
+./scripts/link-live.sh
 ```
 
-To restart LaunchDaemons after deployment:
+To restart LaunchDaemons after linking or editing config:
 
 ```bash
-RESTART=1 ./scripts/deploy.sh
+RESTART=1 ./scripts/link-live.sh
 ```
 
 The script does not overwrite `.env`. Create `.env` from each profile's `.env.example` and fill secrets on the machine.
+
+To verify live symlinks and see pending git changes:
+
+```bash
+./scripts/status-live.sh
+```
+
+`scripts/deploy.sh` is kept as a compatibility alias for `scripts/link-live.sh`.
 
 ## Secret Check
 
