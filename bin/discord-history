@@ -261,6 +261,25 @@ def cmd_search(args):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def cmd_list_channels(args):
+    guild_id = args.guild
+    assert_allowed_guild(guild_id, "requested guild")
+    channels = []
+    for ch in list_channels(guild_id):
+        if ch.get("type") not in (0, 5):
+            continue
+        channels.append(
+            {
+                "id": ch["id"],
+                "name": ch.get("name"),
+                "guild_id": guild_id,
+                "type": ch.get("type"),
+            }
+        )
+    channels.sort(key=lambda c: (c.get("name") or "", c["id"]))
+    print(json.dumps({"guild_id": guild_id, "channels": channels}, ensure_ascii=False, indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch/search Discord message history safely for Hermes skills.")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -274,12 +293,16 @@ def main():
         if name == "search":
             p.add_argument("--query", required=True)
             p.add_argument("--result-limit", type=int, default=30)
+    p = sub.add_parser("list-channels")
+    p.add_argument("--guild", required=True, help="Guild id to list. Must be in DISCORD_ALLOWED_GUILDS.")
     args = parser.parse_args()
     try:
         if args.cmd == "fetch":
             cmd_fetch(args)
         elif args.cmd == "search":
             cmd_search(args)
+        elif args.cmd == "list-channels":
+            cmd_list_channels(args)
     except DiscordError as e:
         print(json.dumps({"error": str(e)}, ensure_ascii=False), file=sys.stderr)
         sys.exit(2)

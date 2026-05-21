@@ -2,7 +2,6 @@
 # Fetch recent messages from all Discord channels in the server
 # Called by cron job — outputs JSON to stdout, progress to stderr
 
-CHANNEL_DIR="/Users/nikenike/.hermes/profiles/nikechandiscord/channel_directory.json"
 DISCORD_HISTORY="/Users/nikenike/.hermes/bin/discord-history"
 GUILD_ID="1404689195150217217"
 LIMIT=30
@@ -15,16 +14,21 @@ echo "Fetching messages from last ${MINUTES_AGO} minutes (since ${FROM_TIME})...
 python3 << 'PYEOF'
 import json, subprocess, sys, os
 
-channel_dir = "/Users/nikenike/.hermes/profiles/nikechandiscord/channel_directory.json"
 history_cmd = "/Users/nikenike/.hermes/bin/discord-history"
 guild = "1404689195150217217"
 limit = 30
 from_time = os.environ.get("FROM_TIME", "")
 
-with open(channel_dir) as f:
-    data = json.load(f)
+listed = subprocess.run(
+    [history_cmd, "list-channels", "--guild", guild],
+    capture_output=True, text=True, timeout=30
+)
+if listed.returncode != 0:
+    print((listed.stderr or listed.stdout or "failed to list channels").strip(), file=sys.stderr)
+    sys.exit(listed.returncode)
 
-channels = [c for c in data.get("platforms", {}).get("discord", []) if c.get("type") == "channel"]
+data = json.loads(listed.stdout)
+channels = data.get("channels", [])
 
 results = []
 for ch in channels:

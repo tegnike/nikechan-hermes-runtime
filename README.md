@@ -33,6 +33,7 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `sessions/`
 - `logs/`
 - `gateway/`, `gateway_state.json`, command sync state, and cron lock files
+- `channel_directory.json`; channel lists are fetched from Discord at runtime
 - profile-local `bin/tirith` runtime binaries
 - profile `workspace/` contents, except files intentionally copied into this repo
 - Hermes bundled runtime under `~/.hermes/hermes-agent`
