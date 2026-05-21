@@ -263,7 +263,7 @@ discord:
   thread_require_mention: false
   history_backfill: true
   history_backfill_limit: 50
-  reactions: true
+  reactions: false
   server_actions: create_thread
 timezone: Asia/Tokyo
 onboarding:
