@@ -26,6 +26,14 @@ check_link() {
   echo "ok: $dst"
 }
 
+check_link_if_present() {
+  local src="$1"
+  local dst="$2"
+  if [[ -e "$src" ]]; then
+    check_link "$src" "$dst"
+  fi
+}
+
 check_link "$repo_root/bin/discord-history" "$hermes_root/bin/discord-history"
 check_link "$repo_root/bin/discord-freeze" "$hermes_root/bin/discord-freeze"
 check_link "$repo_root/bin/nikechan-emotion" "$hermes_root/bin/nikechan-emotion"
@@ -35,8 +43,11 @@ for profile in "${profiles[@]}"; do
   src_profile="$repo_root/profiles/$profile"
   dst_profile="$hermes_root/profiles/$profile"
   check_link "$src_profile/config.yaml" "$dst_profile/config.yaml"
+  check_link "$src_profile/profile.yaml" "$dst_profile/profile.yaml"
   check_link "$src_profile/SOUL.md" "$dst_profile/SOUL.md"
   check_link "$src_profile/memories" "$dst_profile/memories"
+  check_link_if_present "$src_profile/scripts" "$dst_profile/scripts"
+  check_link_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
   for skill in "${managed_skills[@]}"; do
     check_link "$src_profile/skills/$skill" "$dst_profile/skills/$skill"
   done

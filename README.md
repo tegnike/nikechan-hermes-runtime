@@ -14,8 +14,11 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `hermes-scripts/`
   - scripts linked to `~/.hermes/scripts`
 - `profiles/<profile>/config.yaml`
+- `profiles/<profile>/profile.yaml`
 - `profiles/<profile>/SOUL.md`
 - `profiles/<profile>/memories/*.md`
+- `profiles/<profile>/scripts/` when present
+- `profiles/<profile>/cron/jobs.json` when present
 - `profiles/<profile>/skills/*/SKILL.md`
 - `profiles/<profile>/plugins/nikechan-discord-routing/`
 - `profiles/<profile>/.env.example`
@@ -29,7 +32,15 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `state.db`
 - `sessions/`
 - `logs/`
+- `gateway/`, `gateway_state.json`, command sync state, and cron lock files
+- profile-local `bin/tirith` runtime binaries
+- profile `workspace/` contents, except files intentionally copied into this repo
 - Hermes bundled runtime under `~/.hermes/hermes-agent`
+
+`cron/jobs.json` currently contains both schedule definitions and mutable run
+state (`next_run_at`, `last_run_at`, counters, errors). It is managed because
+Hermes uses it as the live scheduler config, but it may become dirty after cron
+ticks.
 
 ## Profiles
 

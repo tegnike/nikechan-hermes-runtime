@@ -53,6 +53,15 @@ replace_with_symlink() {
   echo "linked $dst -> $src"
 }
 
+replace_with_symlink_if_present() {
+  local src="$1"
+  local dst="$2"
+
+  if [[ -e "$src" ]]; then
+    replace_with_symlink "$src" "$dst"
+  fi
+}
+
 mkdir -p "$bin_dir" "$profile_root"
 
 replace_with_symlink "$repo_root/bin/discord-history" "$bin_dir/discord-history"
@@ -66,8 +75,11 @@ for profile in "${profiles[@]}"; do
   mkdir -p "$dst_profile/skills" "$dst_profile/plugins"
 
   replace_with_symlink "$src_profile/config.yaml" "$dst_profile/config.yaml"
+  replace_with_symlink "$src_profile/profile.yaml" "$dst_profile/profile.yaml"
   replace_with_symlink "$src_profile/SOUL.md" "$dst_profile/SOUL.md"
   replace_with_symlink "$src_profile/memories" "$dst_profile/memories"
+  replace_with_symlink_if_present "$src_profile/scripts" "$dst_profile/scripts"
+  replace_with_symlink_if_present "$src_profile/cron/jobs.json" "$dst_profile/cron/jobs.json"
 
   for skill in "${managed_skills[@]}"; do
     replace_with_symlink "$src_profile/skills/$skill" "$dst_profile/skills/$skill"
