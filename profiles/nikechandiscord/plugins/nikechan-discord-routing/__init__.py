@@ -23,6 +23,9 @@ SUMMARY_RE = re.compile(r"(要約|まとめ|どんな話|何があった|内容|
 DISCORD_CONTEXT_RE = re.compile(r"(Discord|ディスコ|チャンネル|<#\d+>|#\S+)")
 TIME_CONTEXT_RE = re.compile(r"(ここ|直近|過去|今日|昨日|数時間|履歴|会話|ログ)")
 SEARCH_RE = re.compile(r"(調べて|調査|探して|検索|ログ探|履歴探|経緯|いつ.*話|誰.*話)")
+MUSIC_AUDIO_RE = re.compile(r"(楽曲解析|音楽解析|音声解析|この曲|曲.*(?:解析|分析|調べ)|音声.*(?:解析|分析|要約|まとめ|文字起こし)|歌詞|ボーカル|曲調|ジャンル|テンポ|mp3|wav|m4a|flac|ogg|aac)", re.IGNORECASE)
+DIRECT_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"]+\.(?:mp3|wav|m4a|flac|ogg|aac|mp4|webm)(?:\?[^\s<>\"]*)?", re.IGNORECASE)
+MAX_MUSIC_OUTPUT_CHARS = 40000
 AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
 YOUTUBE_URL_RE = re.compile(r"https?://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s<>\"]+")
 ARXIV_ID_RE = re.compile(r"\b(\d{4}\.\d{4,5}(?:v\d+)?)\b")
@@ -167,10 +170,16 @@ def _looks_like_summary_request(text: str) -> bool:
     return bool(SUMMARY_RE.search(text) and (DISCORD_CONTEXT_RE.search(text) or TIME_CONTEXT_RE.search(text)))
 
 
+def _looks_like_music_audio_request(text: str) -> bool:
+    return bool(MUSIC_AUDIO_RE.search(text))
+
+
 def _looks_like_search_request(text: str) -> bool:
     if _looks_like_summary_request(text):
         return False
     if YOUTUBE_URL_RE.search(text) or ARXIV_CONTEXT_RE.search(text):
+        return False
+    if _looks_like_music_audio_request(text):
         return False
     return bool(SEARCH_RE.search(text))
 
@@ -518,6 +527,89 @@ def _rewrite_discord_amnesty(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
+def _event_audio_sources(event: Any) -> list[str]:
+    sources: list[str] = []
+    media_urls = list(getattr(event, "media_urls", None) or [])
+    media_types = list(getattr(event, "media_types", None) or [])
+    for idx, value in enumerate(media_urls):
+        if not value:
+            continue
+        mtype = media_types[idx] if idx < len(media_types) else ""
+        lower = str(value).lower().split("?", 1)[0]
+        if str(mtype).startswith("audio/") or lower.endswith((".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac", ".webm", ".mp4")):
+            sources.append(str(value))
+    return sources
+
+
+def _direct_media_urls(text: str) -> list[str]:
+    return [m.group(0).rstrip("。、)") for m in DIRECT_MEDIA_URL_RE.finditer(text)]
+
+
+def _music_mode(text: str) -> str:
+    if re.search(r"(文字起こし|議事録|話者|会話|音声.*(?:内容|要約|まとめ))", text):
+        return "speech"
+    return "music"
+
+
+def _run_music_audio_analysis(text: str, event: Any) -> tuple[str, list[str]]:
+    helper = Path.home() / ".hermes" / "bin" / "gemini-audio-analyze"
+    sources = _event_audio_sources(event) or _direct_media_urls(text)
+    if not sources:
+        payload = {
+            "available": True,
+            "skill": "music-audio-analysis",
+            "helper": str(helper),
+            "model": "gemini-3.5-flash",
+            "how_to_use": "音声・音楽ファイルを添付するか、mp3/wav/m4a/flac/ogg/aac/mp4 などの直接メディアURLを貼って、解析してと依頼してください。",
+            "can_do": ["曲調・ジャンル・構成の分析", "ボーカルや感情の説明", "聞き取れる歌詞の要旨", "音声内容の要約"],
+            "limitations": ["通常チャットから任意のファイル一覧やスキル一覧は読めません", "歌詞全文の出力はしません"],
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2), ["音声入力なし: スキル情報のみ"]
+
+    source = sources[0]
+    mode = _music_mode(text)
+    args = [str(helper), "analyze", "--mode", mode]
+    if source.startswith("http://") or source.startswith("https://"):
+        args += ["--url", source]
+    else:
+        args += ["--file", source]
+    if text.strip() and text.strip() != "(attachment)":
+        args += ["--prompt", text[:800]]
+
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    result = subprocess.run(args, text=True, capture_output=True, timeout=300, env=proc_env)
+    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    if result.returncode != 0:
+        payload = json.dumps({"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode}, ensure_ascii=False)
+        return payload, notes
+    payload = result.stdout.strip()
+    if len(payload) > MAX_MUSIC_OUTPUT_CHARS:
+        payload = payload[:MAX_MUSIC_OUTPUT_CHARS] + "\n...TRUNCATED..."
+        notes.append("解析結果が大きいため途中で切り詰めています。")
+    return payload, notes
+
+
+def _rewrite_music_audio(text: str, event: Any) -> dict[str, str] | None:
+    has_audio = bool(_event_audio_sources(event) or _direct_media_urls(text))
+    if not (_looks_like_music_audio_request(text) or has_audio):
+        return None
+    payload, notes = _run_music_audio_analysis(text, event)
+    rewritten = (
+        "[MUSIC_AUDIO_ANALYSIS_DATA]\n"
+        f"元の依頼: {text}\n"
+        + "\n".join(notes)
+        + "\n\n"
+        "以下はニケちゃん管理の music-audio-analysis スキル/補助CLIの結果です。"
+        "available が true の情報だけの場合は、スキルが存在して使えることと、音声ファイルか直接メディアURLが必要なことを短く説明してください。"
+        "解析結果がある場合は、日本語で実用的に要約してください。歌詞全文は出力せず、要旨として扱ってください。\n\n"
+        "```text\n"
+        f"{payload}\n"
+        "```"
+    )
+    return {"action": "rewrite", "text": rewritten}
+
+
 def _rewrite(event: Any) -> dict[str, str] | None:
     text = getattr(event, "text", "") or ""
     if not isinstance(text, str):
@@ -529,6 +621,10 @@ def _rewrite(event: Any) -> dict[str, str] | None:
             return routed
 
     routed = _rewrite_discord_amnesty(text, event)
+    if routed:
+        return routed
+
+    routed = _rewrite_music_audio(text, event)
     if routed:
         return routed
 

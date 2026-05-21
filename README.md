@@ -84,6 +84,8 @@ duplicate repeats, excessive mentions, and unsolicited external-contact
 business solicitation inside the allowed guild. The default timeout duration is
 12 hours. Admin-only amnesty requests can shorten or release a timeout when a moderator shares a concrete apology; requester permissions are checked against Discord before any action is applied.
 
+Music/audio analysis is routed through `music-audio-analysis` and `gemini-audio-analyze`. In Discord, requests mentioning music/audio analysis are handled before generic Discord history search; with an attached audio file or direct media URL, the helper runs Gemini audio analysis.
+
 ## Live Management
 
 Hermes reads files from `~/.hermes`, but the managed files should be symlinked
