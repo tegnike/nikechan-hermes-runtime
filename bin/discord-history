@@ -227,7 +227,7 @@ def fetch_messages(channel: str, guild_id: str | None, start: dt.datetime | None
         before = oldest
         if stop or len(batch) < batch_limit:
             break
-        time.sleep(0.25)
+        time.sleep(0.05)
     out.sort(key=lambda m: m["timestamp"] or "")
     return {"channel": ch, "from": iso(start) if start else None, "to": iso(end) if end else None, "count": len(out), "messages": out}
 
@@ -259,6 +259,58 @@ def cmd_search(args):
     data["result_count"] = len(data["results"])
     data.pop("messages", None)
     print(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+def cmd_search_guild(args):
+    guild_id = args.guild
+    assert_allowed_guild(guild_id, "requested guild")
+    start = parse_time(args.from_time)
+    end = parse_time(args.to_time)
+    query = args.query.lower()
+    results = []
+    errors = []
+    scanned_channels = 0
+    scanned_messages = 0
+
+    for ch in list_channels(guild_id):
+        if ch.get("type") not in (0, 5):
+            continue
+        scanned_channels += 1
+        try:
+            data = fetch_messages(ch["id"], guild_id, start, end, args.limit_per_channel)
+        except Exception as exc:
+            errors.append({"channel_id": ch.get("id"), "channel_name": ch.get("name"), "error": str(exc)})
+            continue
+        scanned_messages += data.get("count", 0)
+        for msg in data["messages"]:
+            hay = " ".join([
+                msg.get("content") or "",
+                msg["author"].get("username") or "",
+                msg["author"].get("display_name") or "",
+                " ".join(a.get("filename") or "" for a in msg.get("attachments", [])),
+                " ".join(e.get("title") or "" for e in msg.get("embeds", [])),
+                " ".join(e.get("description") or "" for e in msg.get("embeds", [])),
+            ]).lower()
+            if query in hay:
+                msg["channel"] = data["channel"]
+                results.append(msg)
+
+    results.sort(key=lambda m: m.get("timestamp") or "")
+    print(json.dumps(
+        {
+            "guild_id": guild_id,
+            "from": iso(start) if start else None,
+            "to": iso(end) if end else None,
+            "query": args.query,
+            "scanned_channels": scanned_channels,
+            "scanned_messages": scanned_messages,
+            "result_count_total": len(results),
+            "results": results[: args.result_limit],
+            "errors": errors[:20],
+        },
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 def cmd_list_channels(args):
@@ -293,6 +345,13 @@ def main():
         if name == "search":
             p.add_argument("--query", required=True)
             p.add_argument("--result-limit", type=int, default=30)
+    p = sub.add_parser("search-guild")
+    p.add_argument("--guild", required=True, help="Guild id to search. Must be in DISCORD_ALLOWED_GUILDS.")
+    p.add_argument("--from", dest="from_time", help="UTC or offset ISO timestamp/date")
+    p.add_argument("--to", dest="to_time", help="UTC or offset ISO timestamp/date")
+    p.add_argument("--limit-per-channel", type=int, default=700, help="Maximum messages to scan per channel")
+    p.add_argument("--query", required=True)
+    p.add_argument("--result-limit", type=int, default=30)
     p = sub.add_parser("list-channels")
     p.add_argument("--guild", required=True, help="Guild id to list. Must be in DISCORD_ALLOWED_GUILDS.")
     args = parser.parse_args()
@@ -301,6 +360,8 @@ def main():
             cmd_fetch(args)
         elif args.cmd == "search":
             cmd_search(args)
+        elif args.cmd == "search-guild":
+            cmd_search_guild(args)
         elif args.cmd == "list-channels":
             cmd_list_channels(args)
     except DiscordError as e:
