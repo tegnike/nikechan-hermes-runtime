@@ -86,6 +86,7 @@ skills:
     - hermes-agent-skill-authoring
     - himalaya
     - huggingface-hub
+    - humanizer
     - ideation
     - imessage
     - jupyter-live-kernel
