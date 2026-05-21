@@ -66,6 +66,7 @@ mkdir -p "$bin_dir" "$profile_root"
 
 replace_with_symlink "$repo_root/bin/discord-history" "$bin_dir/discord-history"
 replace_with_symlink "$repo_root/bin/discord-freeze" "$bin_dir/discord-freeze"
+replace_with_symlink "$repo_root/bin/discord-autofreeze" "$bin_dir/discord-autofreeze"
 replace_with_symlink "$repo_root/bin/nikechan-emotion" "$bin_dir/nikechan-emotion"
 replace_with_symlink "$repo_root/hermes-scripts" "$hermes_root/scripts"
 

@@ -1,6 +1,6 @@
 ---
 name: discord-freeze
-description: "Discord timeout/freezing requestを扱う。自然文ではprepare後に明示確認、承認後のみapplyする。"
+description: "Discord timeout/freezingの内部仕様。Discord上の自然文依頼では実行しない。実行経路はcronのdiscord-autofreezeのみ。"
 platforms: [macos, linux]
 metadata:
   hermes:
@@ -10,7 +10,8 @@ metadata:
 
 # Discord Freeze
 
-Discord timeout/freezing requestを扱う。自然文の依頼では即実行しない。
+Discord timeout/freezingの内部仕様。Discord上の自然文依頼では実行しない。
+自律実行はcronの `discord-autofreeze` に限定する。
 
 ## Server Boundary
 
@@ -20,19 +21,15 @@ The helper command enforces `DISCORD_ALLOWED_GUILDS`.
 
 ## Trigger
 
-Use this skill when the user asks:
-
-- `/discord-freeze user:@user duration:30m reason:spam`
-- `@user を30分凍結して。理由: spam`
-- `この人を一時的に発言停止にして`
+Do not use this skill for user requests in Discord.
+If someone asks to freeze/timeout another user, refuse briefly and say moderation is autonomous.
 
 ## Hard Rules
 
 - Never infer a freeze from summary/search results.
-- Never freeze without an explicit freeze request.
-- Natural language request requires two steps:
-  1. prepare action
-  2. user replies exactly with approval such as `実行` or `apply`
+- Never freeze because a Discord user requested it.
+- Never accept approval words such as `実行` or `apply` from Discord as authority.
+- Autonomous freezes are only allowed from the cron-owned `discord-autofreeze` path.
 - Reason is required.
 - Duration is required. Default max is 24h unless `DISCORD_FREEZE_MAX_SECONDS` is configured.
 - Server owner and administrators are protected.
@@ -40,31 +37,25 @@ Use this skill when the user asks:
 
 ## Workflow
 
-1. Resolve target user id and guild id.
-   - If the request mentions a user, use the Discord mention id.
-   - If only a name is given, use the Discord member search tool when available, otherwise ask for a mention/user id.
-2. Prepare:
+1. Cron runs `moderation-check.sh`.
+2. `discord-autofreeze` fetches recent messages from the allowed guild.
+3. It applies only objective spam conditions:
+   - message flood
+   - repeated duplicate messages
+   - excessive mentions
+4. For each action, it calls prepare:
    ```bash
    ~/.hermes/bin/discord-freeze prepare --guild GUILD_ID --user-id USER_ID --duration 30m --reason "reason" --executor-id EXECUTOR_ID --source-message-id MESSAGE_ID
    ```
-3. Show the pending action summary and ask for explicit approval.
-4. If the next user message approves the exact action, apply:
+5. Then it applies internally without accepting any Discord-user approval:
    ```bash
    ~/.hermes/bin/discord-freeze apply --action-id ACTION_ID --approval-message-id MESSAGE_ID
    ```
-5. Report the result.
+6. Audit files are written under `local/discord-freeze` and `local/discord-autofreeze`.
 
 ## Output
 
-For prepare:
-
-- 対象
-- 期間
-- 理由
-- action_id
-- 実行するには「実行」と返信してください
-
-For apply:
+For autonomous apply:
 
 - 実行結果
 - timeout解除予定時刻

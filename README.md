@@ -10,6 +10,7 @@ Hermes本体、bundled skills、標準Gateway実装、state DB、logs、sessions
 - `bin/`
   - `discord-history`
   - `discord-freeze`
+  - `discord-autofreeze`
   - `nikechan-emotion`
 - `hermes-scripts/`
   - scripts linked to `~/.hermes/scripts`
@@ -72,6 +73,11 @@ This means unknown Discord users can chat with AI Nikechan in the allowed
 channel, but they cannot use the bot to edit config, create skills, run shell
 commands, mutate memory, or administer Discord. Runtime changes are managed from
 this repo on the subMac.
+
+Moderation timeouts are also not user-command driven. `discord-freeze` is the
+low-level prepare/apply helper, while `discord-autofreeze` is the cron-only
+autonomous checker. It only acts on objective spam signals such as message
+floods, duplicate repeats, and excessive mentions inside the allowed guild.
 
 ## Live Management
 
