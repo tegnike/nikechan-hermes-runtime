@@ -94,3 +94,7 @@ If quoting lyrics is necessary, keep verbatim lyric excerpts extremely short and
 - If `GEMINI_API_KEY` / `GOOGLE_API_KEY` is missing, tell the operator that the Gemini API key must be configured in the profile `.env`.
 - If the helper reports a file-size/upload error, retry with a shorter clip or ask for a smaller file.
 - If the user asks for real-time transcription, explain that this helper is for file/URL analysis, not live streaming.
+
+## Routing
+
+- 音楽・音声解析の意図分類はLLMを優先し、LLM失敗時だけ保守的な正規表現へフォールバックする。

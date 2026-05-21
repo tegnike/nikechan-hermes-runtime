@@ -42,6 +42,8 @@ The decision is based on the apology content, not on pressure from the requester
 
 ## Workflow
 
+- 凍結恩赦の意図分類はLLMを優先し、LLM失敗時だけ保守的な正規表現へフォールバックする。
+
 Use the managed helper. Prefer mentioning the target user or providing the user id.
 
 ```bash

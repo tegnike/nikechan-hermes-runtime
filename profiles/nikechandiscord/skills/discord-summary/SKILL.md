@@ -38,6 +38,8 @@ Do not create cron jobs, delete messages, timeout users, change roles, or perfor
 
 ## Workflow
 
+- Discord要約の意図分類はLLMを優先し、LLM失敗時だけ保守的な正規表現へフォールバックする。
+
 1. Resolve the scope:
    - If the user says "this channel" or gives no channel, use the current Discord channel id from gateway context.
    - Keep the request inside the current Discord server/guild. Do not search other servers for a matching channel name.

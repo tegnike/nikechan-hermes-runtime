@@ -42,6 +42,7 @@ MAX_RESEARCH_PAYLOAD_CHARS = 60000
 GENERIC_CHANNEL_WORDS = {"discord", "Discord", "ディスコ", "この", "現在", "今いる"}
 logger = logging.getLogger(__name__)
 _REMINDER_INTENT_CACHE: dict[str, dict[str, Any]] = {}
+_ROUTE_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def _home() -> Path:
@@ -437,13 +438,121 @@ def _fallback_reminder_intent(text: str) -> dict[str, Any]:
 
 
 def _reminder_intent(text: str) -> dict[str, Any]:
-    cached = _REMINDER_INTENT_CACHE.get(text)
+    route = _route_intent(text)
+    mapping = {
+        "reminder_create": "create",
+        "reminder_list": "list",
+        "reminder_cancel": "cancel",
+        "reminder_cancel_check": "cancel_check",
+    }
+    action = mapping.get(route.get("action"), "none")
+    return {**route, "action": action}
+
+
+def _llm_route_intent(text: str, env: dict[str, str]) -> dict[str, Any] | None:
+    if env.get("NIKECHAN_DISABLE_LLM_ROUTE_INTENT") == "1":
+        return None
+
+    api_key = env.get("ALIBABA_CODING_PLAN_API_KEY") or env.get("DASHSCOPE_API_KEY")
+    base_url = (env.get("ALIBABA_CODING_PLAN_BASE_URL") or "https://coding-intl.dashscope.aliyuncs.com/v1").rstrip("/")
+    model = env.get("HERMES_INFERENCE_MODEL") or "qwen3.6-plus"
+    if not api_key:
+        return None
+
+    prompt = (
+        "You classify a Japanese Discord message for AI Nikechan's safe routing layer.\n"
+        "Return ONLY compact JSON with this schema:\n"
+        "{\"action\":\"summary|search|music_audio|amnesty|reminder_create|reminder_list|reminder_cancel|reminder_cancel_check|none\",\"confidence\":0.0,\"reason\":\"...\"}\n"
+        "Actions:\n"
+        "- summary: user asks to summarize Discord channel/server conversation history.\n"
+        "- search: user asks to find/search/investigate past Discord messages, context, who said what, or when something was discussed.\n"
+        "- music_audio: user asks to analyze music/audio/lyrics/vocals/Suno/song content, or asks whether that analysis is available.\n"
+        "- amnesty: admin-like user reports an apology/reflection and asks whether to shorten/remove a freeze/timeout.\n"
+        "- reminder_create: user wants to create/schedule a fixed future Discord reminder/notification.\n"
+        "- reminder_list: user asks to show/check/list existing reminders.\n"
+        "- reminder_cancel: user instructs deletion/stop/cancel of an existing reminder.\n"
+        "- reminder_cancel_check: user asks whether an existing reminder can be deleted/stopped, without clearly commanding deletion.\n"
+        "- none: anything else.\n"
+        "Safety and disambiguation:\n"
+        "- Freezing/timeout as moderation is not amnesty unless the message includes apology/reflection/forgiveness/shorten/remove freeze.\n"
+        "- Message deletion/file deletion is none unless explicitly about deleting a reminder record.\n"
+        "- Web search, YouTube, arXiv, general coding, or normal chat are none.\n"
+        "- Prefer none when ambiguous.\n\n"
+        f"Message: {text}"
+    )
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "You are a conservative route classifier. Output JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 220,
+    }
+    req = urllib.request.Request(
+        base_url + "/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        method="POST",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        parsed = _json_from_text(content)
+    except Exception as exc:
+        logger.warning("nikechan-discord-routing route intent LLM failed: %s", exc)
+        return None
+
+    action = str(parsed.get("action") or "none").strip().lower()
+    allowed = {
+        "summary", "search", "music_audio", "amnesty",
+        "reminder_create", "reminder_list", "reminder_cancel", "reminder_cancel_check", "none",
+    }
+    if action not in allowed:
+        action = "none"
+    try:
+        confidence = float(parsed.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    return {
+        "action": action,
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": str(parsed.get("reason") or "")[:200],
+        "source": "llm",
+    }
+
+
+def _fallback_route_intent(text: str) -> dict[str, Any]:
+    action = "none"
+    if _looks_like_reminder_management_request(text):
+        if REMINDER_LIST_RE.search(text):
+            action = "reminder_list"
+        elif REMINDER_DELETE_QUESTION_RE.search(text) and not re.search(r"(削除して|消して|止めて|停止して|解除して|キャンセルして)", text):
+            action = "reminder_cancel_check"
+        else:
+            action = "reminder_cancel"
+    elif _looks_like_reminder_request(text):
+        action = "reminder_create"
+    elif _looks_like_amnesty_request(text):
+        action = "amnesty"
+    elif _looks_like_music_audio_request(text):
+        action = "music_audio"
+    elif _looks_like_search_request(text):
+        action = "search"
+    elif _looks_like_summary_request(text):
+        action = "summary"
+    return {"action": action, "confidence": 0.6 if action != "none" else 0.0, "reason": "regex fallback", "source": "fallback"}
+
+
+def _route_intent(text: str) -> dict[str, Any]:
+    cached = _ROUTE_INTENT_CACHE.get(text)
     if cached:
         return cached
 
     env = _load_env()
-    llm_intent = _llm_reminder_intent(text, env)
-    fallback = _fallback_reminder_intent(text)
+    llm_intent = _llm_route_intent(text, env)
+    fallback = _fallback_route_intent(text)
     if llm_intent and llm_intent.get("confidence", 0.0) >= 0.65:
         result = llm_intent
     elif fallback["action"] != "none":
@@ -451,9 +560,9 @@ def _reminder_intent(text: str) -> dict[str, Any]:
     else:
         result = llm_intent or fallback
 
-    _REMINDER_INTENT_CACHE[text] = result
-    if len(_REMINDER_INTENT_CACHE) > 512:
-        _REMINDER_INTENT_CACHE.pop(next(iter(_REMINDER_INTENT_CACHE)))
+    _ROUTE_INTENT_CACHE[text] = result
+    if len(_ROUTE_INTENT_CACHE) > 512:
+        _ROUTE_INTENT_CACHE.pop(next(iter(_ROUTE_INTENT_CACHE)))
     return result
 
 
@@ -687,7 +796,8 @@ def _rewrite_arxiv(text: str) -> dict[str, str] | None:
 
 
 def _rewrite_discord_search(text: str, event: Any) -> dict[str, str] | None:
-    if not _looks_like_search_request(text):
+    intent = _route_intent(text)
+    if intent.get("action") != "search":
         return None
 
     env = _load_env()
@@ -866,7 +976,8 @@ def _run_amnesty(text: str, event: Any) -> tuple[str, list[str]]:
 
 
 def _rewrite_discord_amnesty(text: str, event: Any) -> dict[str, str] | None:
-    if not _looks_like_amnesty_request(text):
+    intent = _route_intent(text)
+    if intent.get("action") != "amnesty":
         return None
     payload, notes = _run_amnesty(text, event)
     rewritten = (
@@ -984,7 +1095,8 @@ def _run_music_audio_analysis(text: str, event: Any) -> tuple[str, list[str]]:
 
 def _rewrite_music_audio(text: str, event: Any) -> dict[str, str] | None:
     has_audio = bool(_event_audio_sources(event) or _direct_media_urls(text))
-    if not (_looks_like_music_audio_request(text) or has_audio):
+    intent = _route_intent(text)
+    if not (intent.get("action") == "music_audio" or has_audio):
         return None
     payload, notes = _run_music_audio_analysis(text, event)
     rewritten = (
@@ -1032,7 +1144,8 @@ def _rewrite(event: Any) -> dict[str, str] | None:
     if routed:
         return routed
 
-    if not _looks_like_summary_request(text):
+    intent = _route_intent(text)
+    if intent.get("action") != "summary":
         return None
 
     env = _load_env()

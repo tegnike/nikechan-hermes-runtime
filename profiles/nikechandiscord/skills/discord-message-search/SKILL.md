@@ -33,6 +33,8 @@ Do not perform moderation, deletion, role changes, or cron creation from search 
 
 ## Workflow
 
+- Discord履歴検索の意図分類はLLMを優先し、LLM失敗時だけ保守的な正規表現へフォールバックする。
+
 1. Resolve channel and range. If channel is missing, use the current Discord channel. Keep channel resolution inside the current Discord server/guild.
 2. If no range is provided, scan the latest 500 messages. If the topic is likely older, ask for a date/channel.
 3. Run:
