@@ -4,11 +4,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "rg is required for this check" >&2
-  exit 2
-fi
-
 patterns=(
   'DISCORD_BOT_TOKEN=[A-Za-z0-9._-]+'
   'sk-[A-Za-z0-9_-]{20,}'
@@ -20,8 +15,14 @@ patterns=(
 
 failed=0
 for pattern in "${patterns[@]}"; do
-  if rg -n --hidden --glob '!profiles/*/.env.example' --glob '!scripts/validate-no-secrets.sh' "$pattern" .; then
-    failed=1
+  if command -v rg >/dev/null 2>&1; then
+    if rg -n --hidden --glob '!profiles/*/.env.example' --glob '!scripts/validate-no-secrets.sh' "$pattern" .; then
+      failed=1
+    fi
+  else
+    if grep -REn --exclude='validate-no-secrets.sh' --exclude='.env.example' "$pattern" .; then
+      failed=1
+    fi
   fi
 done
 
