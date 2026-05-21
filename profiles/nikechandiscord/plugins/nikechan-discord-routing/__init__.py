@@ -377,6 +377,7 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
         "- it is a direct question, request, instruction, or asks for help/status/capability\n"
         "- it asks for Discord summary/search, music/audio analysis, reminders, or amnesty handling\n"
         "- it is a clear follow-up that expects the bot to continue the current exchange\n"
+        "- it is a short thanks, acknowledgement, or friendly reaction that could naturally be directed at Nikechan in this bot channel\n"
         "Reply false when:\n"
         "- it is ambient conversation between humans\n"
         "- it is a short reaction, joke, status update, or side comment not addressed to the bot\n"
@@ -454,13 +455,6 @@ def _should_reply(event: Any) -> dict[str, Any]:
 
     env = _load_env()
     fallback = _fallback_should_reply(text, event)
-    if not fallback.get("reply"):
-        result = fallback
-        _SHOULD_REPLY_CACHE[cache_key] = result
-        if len(_SHOULD_REPLY_CACHE) > 512:
-            _SHOULD_REPLY_CACHE.pop(next(iter(_SHOULD_REPLY_CACHE)))
-        return result
-
     llm = _llm_should_reply(text, event, env)
     if llm and llm.get("confidence", 0.0) >= 0.7:
         result = llm
