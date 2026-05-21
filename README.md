@@ -78,7 +78,8 @@ Moderation timeouts are also not user-command driven. `discord-freeze` is the
 low-level prepare/apply helper, while `discord-autofreeze` is the cron-only
 autonomous checker. It only acts on spam signals such as message floods,
 duplicate repeats, excessive mentions, and unsolicited external-contact
-business solicitation inside the allowed guild.
+business solicitation inside the allowed guild. The default timeout duration is
+12 hours.
 
 ## Live Management
 
