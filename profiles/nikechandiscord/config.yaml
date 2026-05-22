@@ -14,6 +14,8 @@ terminal:
   container_persistent: true
 browser:
   inactivity_timeout: 120
+web:
+  search_backend: ddgs
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: true
@@ -152,9 +154,6 @@ agent:
   - delegation
   - messaging
   - todo
-  - browser
-  - web
-  - search
   - safe
   - image_gen
   - vision
@@ -212,7 +211,10 @@ platform_toolsets:
   - hermes-cli
   telegram:
   - hermes-telegram
-  discord: []
+  discord:
+  - browser
+  - web
+  - search
   whatsapp:
   - hermes-whatsapp
   slack:
