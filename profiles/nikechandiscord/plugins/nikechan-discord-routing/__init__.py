@@ -483,6 +483,10 @@ def _person_context_for_event(event: Any) -> str | None:
     ]
     if user.get("relationship"):
         lines.append(f"関係ラベル: {_truncate(user.get('relationship'), 80)}")
+    if user.get("name") and str(user.get("name")).strip() != str(sender_name).strip():
+        lines.append(f"DB登録名: {_truncate(user.get('name'), 80)}")
+    if user.get("bio"):
+        lines.append(f"人物情報: {_truncate(user.get('bio'), 420)}")
     if user.get("memo"):
         lines.append(f"人物メモ: {_truncate(user.get('memo'), 260)}")
     if user.get("context"):
