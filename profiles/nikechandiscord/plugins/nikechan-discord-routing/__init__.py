@@ -49,6 +49,8 @@ _SHOULD_REPLY_CACHE: dict[str, dict[str, Any]] = {}
 _PERSON_CONTEXT_CACHE: dict[str, tuple[float, str | None]] = {}
 _RECENT_DISCORD_MESSAGES: dict[str, list[dict[str, str]]] = {}
 
+PERSON_LOOKUP_RE = re.compile(r"(DB|データベース|ユーザ(?:ー)?記憶|人物|あだ名|ニックネーム|呼び方|誰|だれ)")
+
 
 def _home() -> Path:
     return Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes")
@@ -492,6 +494,7 @@ def _person_context_for_event(event: Any) -> str | None:
     lines = [
         "[DISCORD_PERSON_CONTEXT]",
         "このブロックは現在の発言者に合わせるための内部人物文脈です。自然な応答方針にだけ使い、DB・内部ID・platform横断情報として明かさないでください。",
+        "このブロックがある場合、人物DBの文脈は参照済みです。外部DBを参照できないとは答えず、この範囲の情報を自然に使ってください。",
         f"現在の発言者: {sender_name}",
         f"呼び方の候補: {call_name}",
     ]
@@ -535,13 +538,123 @@ def _person_context_for_event(event: Any) -> str | None:
     return context
 
 
+def _person_lookup_context_for_event(text: str, event: Any) -> str | None:
+    reply_to_text = getattr(event, "reply_to_text", None) or ""
+    material = "\n".join(part for part in [text, reply_to_text, _recent_channel_context(event)] if part)
+    mentioned_ids = re.findall(r"<@!?(\d+)>", material)
+    wants_lookup = bool(PERSON_LOOKUP_RE.search(material) or mentioned_ids)
+    if not wants_lookup:
+        return None
+
+    env = _load_env()
+    candidates: dict[str, dict[str, Any]] = {}
+
+    def add_user(user: dict[str, Any], account: dict[str, Any] | None = None) -> None:
+        uid = str(user.get("id") or user.get("user_id") or "")
+        if not uid:
+            return
+        candidates[uid] = {"user": user, "account": account or candidates.get(uid, {}).get("account")}
+
+    def add_discord_id(discord_id: str) -> None:
+        try:
+            platform_id = urllib.parse.quote(discord_id, safe="")
+            accounts = _supabase_request(
+                "platform_accounts"
+                f"?platform=eq.discord&platform_user_id=eq.{platform_id}"
+                "&select=user_id,username,display_name,guild_nickname&limit=1",
+                env,
+            ) or []
+            if not accounts:
+                return
+            account = accounts[0]
+            uid = urllib.parse.quote(str(account.get("user_id")), safe="")
+            rows = _supabase_request(f"users?id=eq.{uid}&select=*&limit=1", env) or []
+            if rows:
+                add_user(rows[0], account)
+        except Exception as exc:
+            logger.debug("nikechan-discord-routing person lookup by discord id failed: %s", exc)
+
+    def add_matching_users(term: str) -> None:
+        clean = term.strip().strip("「」『』\"'`").replace("*", "")
+        if not clean or len(clean) > 40:
+            return
+        try:
+            q = urllib.parse.quote(clean, safe="")
+            rows = _supabase_request(
+                "users"
+                f"?or=(name.ilike.*{q}*,nickname.ilike.*{q}*,bio.ilike.*{q}*)"
+                "&select=*&limit=10",
+                env,
+            ) or []
+            for user in rows:
+                add_user(user)
+        except Exception as exc:
+            logger.debug("nikechan-discord-routing person lookup by term failed: %s", exc)
+
+    for discord_id in mentioned_ids:
+        add_discord_id(discord_id)
+
+    if PERSON_LOOKUP_RE.search(material):
+        for term in re.findall(r"[「『\"'`]([^」』\"'`]{1,40})[」』\"'`]", material):
+            add_matching_users(term)
+        source_id = _source_user_id(event)
+        if source_id:
+            add_discord_id(source_id)
+        channel = _current_channel(event)
+        for row in (_RECENT_DISCORD_MESSAGES.get(channel or "", []) if channel else [])[-_recent_context_limit():]:
+            discord_id = row.get("user_id")
+            if discord_id:
+                add_discord_id(discord_id)
+        try:
+            rows = _supabase_request("users?select=*&limit=500", env) or []
+            for user in rows:
+                for key in ("name", "nickname"):
+                    value = str(user.get(key) or "").strip()
+                    if value and value in material:
+                        add_user(user)
+                        break
+        except Exception as exc:
+            logger.debug("nikechan-discord-routing person lookup scan failed: %s", exc)
+
+    if not candidates:
+        return None
+
+    lines = [
+        "[DISCORD_PERSON_LOOKUP]",
+        "このブロックは会話内で参照されている人物の内部DB文脈です。公開応答ではDB内部IDやplatform横断情報を明かさず、必要な範囲だけ自然に使ってください。",
+        "このブロックがある場合、人物DBは参照済みです。「DBを直接参照できない」とは答えず、この情報をもとに回答してください。",
+    ]
+    for item in list(candidates.values())[:5]:
+        user = item.get("user") or {}
+        account = item.get("account") or {}
+        display = user.get("name") or account.get("guild_nickname") or account.get("display_name") or account.get("username") or "不明"
+        call_name = user.get("nickname") or display
+        lines.append(f"- 表示名: {_truncate(display, 80)}")
+        lines.append(f"  呼び方: {_truncate(call_name, 80)}")
+        if user.get("bio"):
+            lines.append(f"  人物情報: {_truncate(user.get('bio'), 420)}")
+        if user.get("memo"):
+            lines.append(f"  人物メモ: {_truncate(user.get('memo'), 260)}")
+        if user.get("context"):
+            lines.append(f"  最近の交流文脈: {_truncate(user.get('context'), 320)}")
+    lines.append("[/DISCORD_PERSON_LOOKUP]")
+    return "\n".join(lines)
+
+
 def _with_person_context(text: str, event: Any) -> str:
     if "[DISCORD_PERSON_CONTEXT]" in text:
         return text
+    blocks = []
     context = _person_context_for_event(event)
-    if not context:
+    if context:
+        blocks.append(context)
+    lookup = _person_lookup_context_for_event(text, event)
+    if lookup:
+        blocks.append(lookup)
+    if not blocks:
         return text
-    return context + "\n\n[USER_MESSAGE]\n" + text
+    return "\n\n".join(blocks) + "\n\n[USER_MESSAGE]\n" + text
+
 
 
 def _discord_reaction_rest(event: Any, emoji: str, *, remove: bool = False) -> None:
