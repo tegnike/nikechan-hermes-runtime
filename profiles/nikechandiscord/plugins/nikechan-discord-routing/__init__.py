@@ -924,6 +924,13 @@ def _should_reply(event: Any) -> dict[str, Any]:
 
     env = _load_env()
     fallback = _fallback_should_reply(text, event)
+    if fallback.get("reply") and fallback.get("confidence", 0.0) >= 0.7:
+        _SHOULD_REPLY_CACHE[cache_key] = fallback
+        return fallback
+    if not fallback.get("reply") and fallback.get("confidence", 0.0) >= 0.8:
+        _SHOULD_REPLY_CACHE[cache_key] = fallback
+        return fallback
+
     llm = _llm_should_reply(text, event, env)
     if llm and llm.get("confidence", 0.0) >= _config_float("should_reply_llm_min_confidence", 0.55):
         result = llm
