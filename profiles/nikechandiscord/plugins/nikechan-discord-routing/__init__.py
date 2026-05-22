@@ -47,6 +47,7 @@ _REMINDER_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 _ROUTE_INTENT_CACHE: dict[str, dict[str, Any]] = {}
 _SHOULD_REPLY_CACHE: dict[str, dict[str, Any]] = {}
 _PERSON_CONTEXT_CACHE: dict[str, tuple[float, str | None]] = {}
+_RECENT_DISCORD_MESSAGES: dict[str, list[dict[str, str]]] = {}
 
 
 def _home() -> Path:
@@ -635,6 +636,52 @@ def _is_free_response_channel(event: Any) -> bool:
     return channel in channels
 
 
+def _recent_context_limit() -> int:
+    return max(0, min(_config_int("should_reply_context_messages", 5), 10))
+
+
+def _recent_channel_context(event: Any) -> str:
+    channel = _current_channel(event)
+    if not channel:
+        return ""
+    limit = _recent_context_limit()
+    if limit <= 0:
+        return ""
+    rows = _RECENT_DISCORD_MESSAGES.get(channel, [])[-limit:]
+    lines = []
+    for row in rows:
+        sender = _truncate(row.get("sender") or "unknown", 40)
+        text = _truncate(row.get("text") or "", 220)
+        if text:
+            lines.append(f"- {sender}: {text}")
+    return "\n".join(lines)
+
+
+def _remember_recent_message(event: Any) -> None:
+    text = getattr(event, "text", "") or ""
+    if not isinstance(text, str) or not text.strip():
+        return
+    channel = _current_channel(event)
+    if not channel:
+        return
+    source = getattr(event, "source", None)
+    message_id = _source_message_id(event) or ""
+    rows = _RECENT_DISCORD_MESSAGES.setdefault(channel, [])
+    if message_id and any(row.get("message_id") == message_id for row in rows[-10:]):
+        return
+    rows.append(
+        {
+            "message_id": message_id,
+            "sender": str(getattr(source, "user_name", None) or "unknown"),
+            "user_id": str(getattr(source, "user_id", None) or ""),
+            "text": text.strip(),
+        }
+    )
+    keep = max(20, _recent_context_limit() * 4)
+    if len(rows) > keep:
+        del rows[:-keep]
+
+
 def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, Any] | None:
     if env.get("NIKECHAN_DISABLE_LLM_SHOULD_REPLY") == "1":
         return None
@@ -650,12 +697,15 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
     chat_name = getattr(source, "chat_name", "") or ""
     reply_to_text = getattr(event, "reply_to_text", None) or ""
     free_response = _is_free_response_channel(event)
+    recent_context = _recent_channel_context(event)
     prompt = (
-        "Decide whether AI Nikechan should reply to this single public Discord message.\n"
+        "Decide whether AI Nikechan should reply to the current public Discord message.\n"
         "Return ONLY compact JSON with this schema:\n"
         "{\"reply\":true,\"confidence\":0.0,\"reason\":\"...\"}\n"
         "This profile is a public Discord bot channel. If Channel mode is free_response, "
         "messages are often intended for Nikechan even without an explicit mention.\n"
+        "Use the recent channel context to decide whether the current message is a follow-up to Nikechan, "
+        "a human-to-human side conversation, or a standalone message.\n"
         "Reply true when:\n"
         "- the message is addressed to Nikechan by name, mention, or reply\n"
         "- it is a direct question, request, instruction, or asks for help/status/capability\n"
@@ -673,6 +723,8 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
         "Do not judge safety here; only decide whether a bot response is expected.\n\n"
         f"Channel mode: {'free_response' if free_response else 'normal'}\n"
         f"Channel: {chat_name}\n"
+        "Recent channel context, oldest to newest, excluding the current message:\n"
+        f"{recent_context or '(none)'}\n"
         f"Sender: {sender}\n"
         f"Reply-to text, if any: {reply_to_text[:500]}\n"
         f"Message: {text}"
@@ -746,6 +798,7 @@ def _should_reply(event: Any) -> dict[str, Any]:
             str(_current_channel(event) or ""),
             str(getattr(source, "user_id", "") or ""),
             "reply" if _is_reply_event(event) else "plain",
+            str(hash(_recent_channel_context(event))),
             text,
         ]
     )
@@ -1723,16 +1776,20 @@ def register(ctx):
                     decision.get("confidence"),
                     decision.get("reason"),
                 )
+                _remember_recent_message(event)
                 return {"action": "skip", "reason": "should_reply_false"}
         routed = _rewrite(event)
         if routed and routed.get("action") == "rewrite" and isinstance(routed.get("text"), str):
             routed["text"] = _with_person_context(routed["text"], event)
+            _remember_recent_message(event)
             return routed
         text = getattr(event, "text", "") or ""
         if isinstance(text, str):
             contextualized = _with_person_context(text, event)
             if contextualized != text:
+                _remember_recent_message(event)
                 return {"action": "rewrite", "text": contextualized}
+        _remember_recent_message(event)
         return routed
 
     ctx.register_hook("pre_gateway_dispatch", hook)
