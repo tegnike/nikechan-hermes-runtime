@@ -30,6 +30,7 @@ SUNO_URL_RE = re.compile(r"https?://(?:www\.)?suno\.com/song/[0-9a-fA-F-]{32,36}
 DIRECT_MEDIA_URL_RE = re.compile(r"https?://[^\s<>\"]+\.(?:mp3|wav|m4a|flac|ogg|aac|mp4|webm)(?:\?[^\s<>\"]*)?", re.IGNORECASE)
 MAX_MUSIC_OUTPUT_CHARS = 40000
 AMNESTY_RE = re.compile(r"(恩赦|謝罪|反省文|凍結.*(?:解除|短縮|早め)|timeout.*(?:解除|短縮)|タイムアウト.*(?:解除|短縮))", re.IGNORECASE)
+TODO_RE = re.compile(r"(todo|TODO|タスク|要望|改善案|課題|バックログ).*(追加|登録|入れて|入れといて|残して|メモして)|(?:追加|登録|入れて|入れといて|残して|メモして).*(todo|TODO|タスク|要望|改善案|課題|バックログ)", re.IGNORECASE)
 REMINDER_RE = re.compile(r"(リマインダー?|リマインド|通知して|知らせて|教えて|言って|送って|投稿して)")
 REMINDER_DELETE_RE = re.compile(r"(リマインダー?|リマインド).*(削除|消して|止めて|停止|解除|キャンセル)|(?:削除|消して|止めて|停止|解除|キャンセル).*(リマインダー?|リマインド)")
 REMINDER_LIST_RE = re.compile(r"(リマインダー?|リマインド).*(一覧|リスト|確認|見せて|ある|残って)")
@@ -221,6 +222,12 @@ def _looks_like_amnesty_request(text: str) -> bool:
     if not AMNESTY_RE.search(text):
         return False
     return bool(re.search(r"(凍結|timeout|タイムアウト|謝罪|反省文|恩赦)", text, re.IGNORECASE))
+
+
+def _looks_like_todo_request(text: str) -> bool:
+    if re.search(r"(リマインダー?|リマインド|凍結|タイムアウト|timeout|ban|kick|mute|削除|消して)", text, re.IGNORECASE):
+        return False
+    return bool(TODO_RE.search(text))
 
 
 def _amnesty_target_hint(text: str) -> str:
@@ -1173,12 +1180,13 @@ def _llm_route_intent(text: str, env: dict[str, str]) -> dict[str, Any] | None:
     prompt = (
         "You classify a Japanese Discord message for AI Nikechan's safe routing layer.\n"
         "Return ONLY compact JSON with this schema:\n"
-        "{\"action\":\"summary|search|music_audio|amnesty|reminder_create|reminder_list|reminder_cancel|reminder_cancel_check|none\",\"confidence\":0.0,\"reason\":\"...\"}\n"
+        "{\"action\":\"summary|search|music_audio|amnesty|todo_add|reminder_create|reminder_list|reminder_cancel|reminder_cancel_check|none\",\"confidence\":0.0,\"reason\":\"...\"}\n"
         "Actions:\n"
         "- summary: user asks to summarize Discord channel/server conversation history.\n"
         "- search: user asks to find/search/investigate past Discord messages, context, who said what, or when something was discussed.\n"
         "- music_audio: user asks to analyze music/audio/lyrics/vocals/Suno/song content, or asks whether that analysis is available.\n"
         "- amnesty: admin-like user reports an apology/reflection and asks whether to shorten/remove a freeze/timeout.\n"
+        "- todo_add: user asks to add a request/improvement/task/backlog item to Nikechan's todo list.\n"
         "- reminder_create: user wants to create/schedule a fixed future Discord reminder/notification.\n"
         "- reminder_list: user asks to show/check/list existing reminders.\n"
         "- reminder_cancel: user instructs deletion/stop/cancel of an existing reminder.\n"
@@ -1186,6 +1194,7 @@ def _llm_route_intent(text: str, env: dict[str, str]) -> dict[str, Any] | None:
         "- none: anything else.\n"
         "Safety and disambiguation:\n"
         "- Freezing/timeout as moderation is not amnesty unless the message includes apology/reflection/forgiveness/shorten/remove freeze.\n"
+        "- Do not choose todo_add for reminders or moderation requests.\n"
         "- Message deletion/file deletion is none unless explicitly about deleting a reminder record.\n"
         "- Web search, YouTube, arXiv, general coding, or normal chat are none.\n"
         "- Prefer none when ambiguous.\n\n"
@@ -1217,7 +1226,7 @@ def _llm_route_intent(text: str, env: dict[str, str]) -> dict[str, Any] | None:
 
     action = str(parsed.get("action") or "none").strip().lower()
     allowed = {
-        "summary", "search", "music_audio", "amnesty",
+        "summary", "search", "music_audio", "amnesty", "todo_add",
         "reminder_create", "reminder_list", "reminder_cancel", "reminder_cancel_check", "none",
     }
     if action not in allowed:
@@ -1247,6 +1256,8 @@ def _fallback_route_intent(text: str) -> dict[str, Any]:
         action = "reminder_create"
     elif _looks_like_amnesty_request(text):
         action = "amnesty"
+    elif _looks_like_todo_request(text):
+        action = "todo_add"
     elif _looks_like_music_audio_request(text):
         action = "music_audio"
     elif _looks_like_search_request(text):
@@ -1706,6 +1717,60 @@ def _rewrite_discord_amnesty(text: str, event: Any) -> dict[str, str] | None:
     return {"action": "rewrite", "text": rewritten}
 
 
+def _run_discord_todo(text: str, event: Any) -> tuple[str, list[str]]:
+    env = _load_env()
+    guild = _source_guild_id(event, env)
+    requester = _source_user_id(event)
+    message_id = _source_message_id(event) or ""
+    channel = _current_channel(event) or ""
+    helper = Path.home() / ".hermes" / "bin" / "discord-todo"
+    args = [
+        str(helper),
+        "add",
+        "--text",
+        text,
+        "--channel",
+        channel,
+        "--guild",
+        guild or "",
+        "--requester-id",
+        requester or "",
+        "--source-message-id",
+        message_id,
+    ]
+
+    proc_env = dict(os.environ)
+    proc_env["HERMES_HOME"] = str(_home())
+    result = subprocess.run(args, text=True, capture_output=True, timeout=60, env=proc_env)
+    notes = ["実行コマンド: " + " ".join(_shell_quote(a) for a in args[:4]) + " ..."]
+    if result.returncode != 0:
+        payload = json.dumps({"error": (result.stderr or result.stdout or "").strip(), "returncode": result.returncode}, ensure_ascii=False)
+        return payload, notes
+    return result.stdout.strip(), notes
+
+
+def _rewrite_discord_todo(text: str, event: Any) -> dict[str, str] | None:
+    intent = _route_intent(text)
+    if intent.get("action") != "todo_add":
+        return None
+    payload, notes = _run_discord_todo(text, event)
+    rewritten = (
+        "[DISCORD_TODO_RESULT]\n"
+        f"元の依頼: {text}\n"
+        f"意図判定: {intent.get('action')} ({intent.get('source')}, confidence={intent.get('confidence')})\n"
+        + "\n".join(notes)
+        + "\n\n"
+        "以下は公開Discord向けの安全なtodo追加helperの結果です。"
+        "Supabaseや内部DBの詳細は説明せず、追加できたか、todoタイトルだけを短く日本語で報告してください。"
+        "ok=false または error がある場合は、追加されていないことと理由だけを短く伝えてください。"
+        "dry_run は実追加ではありません。\n\n"
+        "```json\n"
+        f"{payload}\n"
+        "```"
+    )
+    return {"action": "rewrite", "text": rewritten}
+
+
 def _event_audio_sources(event: Any) -> list[str]:
     sources: list[str] = []
     media_urls = list(getattr(event, "media_urls", None) or [])
@@ -1836,6 +1901,10 @@ def _rewrite(event: Any) -> dict[str, str] | None:
             return routed
 
     routed = _rewrite_discord_amnesty(text, event)
+    if routed:
+        return routed
+
+    routed = _rewrite_discord_todo(text, event)
     if routed:
         return routed
 
