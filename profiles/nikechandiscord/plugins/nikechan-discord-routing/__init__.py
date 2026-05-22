@@ -888,7 +888,10 @@ def _fallback_should_reply(text: str, event: Any) -> dict[str, Any]:
         return {"reply": False, "confidence": 0.8, "reason": "addressed to another human", "source": "fallback"}
     if _is_free_response_channel(event) and re.search(r"(ありがとう|ありがと|助かる|ごめん|すまん|寂しい|悲しい|無視|なんで)", text):
         return {"reply": True, "confidence": 0.75, "reason": "free-response social cue", "source": "fallback"}
-    if re.search(r"[?？]|(教えて|お願い|確認して|見て|できる|できますか|どう|なに|何|なぜ|なんで|いつ|どこ|誰)", text):
+    if re.search(
+        r"[?？]|(教えて|お願い|確認して|見て|できる|できますか|どう|なに|何|なぜ|なんで|なん(?:だ|や|でした)?っけ|だっけ|いつ|どこ|誰|どれ|どんな|今.*(?:設定|制限|機能|状態)|(?:設定|制限|機能|状態).*(?:なん|何|どう|だっけ|教えて|確認))",
+        text,
+    ):
         return {"reply": True, "confidence": 0.7, "reason": "direct question/request", "source": "fallback"}
     return {"reply": False, "confidence": 0.6, "reason": "ambient message fallback", "source": "fallback"}
 
