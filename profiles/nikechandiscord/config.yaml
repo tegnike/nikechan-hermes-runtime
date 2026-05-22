@@ -15,7 +15,8 @@ terminal:
 browser:
   inactivity_timeout: 120
 web:
-  search_backend: ddgs
+  search_backend: tavily
+  extract_backend: tavily
 tool_loop_guardrails:
   warnings_enabled: true
   hard_stop_enabled: true
