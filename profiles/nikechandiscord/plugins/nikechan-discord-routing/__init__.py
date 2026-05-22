@@ -361,6 +361,19 @@ def _config_int(name: str, default: int) -> int:
         return default
 
 
+def _config_float(name: str, default: float) -> float:
+    env_name = "NIKECHAN_DISCORD_" + name.upper()
+    raw = os.environ.get(env_name)
+    if raw is None:
+        raw = os.environ.get("DISCORD_" + name.upper())
+    if raw is None:
+        raw = _profile_discord_config().get(name)
+    try:
+        return float(raw)
+    except Exception:
+        return default
+
+
 def _truncate(value: Any, limit: int) -> str:
     text = str(value or "").strip()
     if len(text) <= limit:
@@ -603,6 +616,25 @@ def _looks_addressed_to_nikechan(text: str) -> bool:
     return bool(re.search(r"(ニケちゃん|AIニケちゃん|nikechan|nike-?chan)", text, re.IGNORECASE))
 
 
+def _is_reply_event(event: Any) -> bool:
+    source = getattr(event, "source", None)
+    return bool(
+        getattr(event, "reply_to_message_id", None)
+        or getattr(source, "reply_to_message_id", None)
+        or getattr(event, "reply_to_text", None)
+        or getattr(source, "reply_to_text", None)
+    )
+
+
+def _is_free_response_channel(event: Any) -> bool:
+    channel = _current_channel(event)
+    if not channel:
+        return False
+    raw = _profile_discord_config().get("free_response_channels", "")
+    channels = [part.strip() for part in str(raw).split(",") if part.strip()]
+    return channel in channels
+
+
 def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, Any] | None:
     if env.get("NIKECHAN_DISABLE_LLM_SHOULD_REPLY") == "1":
         return None
@@ -617,22 +649,29 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
     sender = getattr(source, "user_name", "") or ""
     chat_name = getattr(source, "chat_name", "") or ""
     reply_to_text = getattr(event, "reply_to_text", None) or ""
+    free_response = _is_free_response_channel(event)
     prompt = (
         "Decide whether AI Nikechan should reply to this single public Discord message.\n"
         "Return ONLY compact JSON with this schema:\n"
         "{\"reply\":true,\"confidence\":0.0,\"reason\":\"...\"}\n"
+        "This profile is a public Discord bot channel. If Channel mode is free_response, "
+        "messages are often intended for Nikechan even without an explicit mention.\n"
         "Reply true when:\n"
         "- the message is addressed to Nikechan by name, mention, or reply\n"
         "- it is a direct question, request, instruction, or asks for help/status/capability\n"
         "- it asks for Discord summary/search, music/audio analysis, reminders, or amnesty handling\n"
         "- it is a clear follow-up that expects the bot to continue the current exchange\n"
         "- it is a short thanks, acknowledgement, or friendly reaction that could naturally be directed at Nikechan in this bot channel\n"
+        "- in free_response mode, it is an emotional/status message that naturally invites a short bot reaction\n"
         "Reply false when:\n"
-        "- it is ambient conversation between humans\n"
-        "- it is a short reaction, joke, status update, or side comment not addressed to the bot\n"
+        "- it is clearly ambient conversation between humans\n"
+        "- it is clearly a short reaction, joke, status update, or side comment not addressed to the bot\n"
         "- it mentions another human and is not asking Nikechan to do anything\n"
         "- it is only pasted logs/quotes without a question or request to Nikechan\n"
-        "Prefer false when ambiguous. Do not judge safety here; only decide whether a bot response is expected.\n\n"
+        "In free_response mode, prefer true when a normal participant would reasonably expect Nikechan to react. "
+        "Prefer false only when it is clearly human-to-human or no response is expected. "
+        "Do not judge safety here; only decide whether a bot response is expected.\n\n"
+        f"Channel mode: {'free_response' if free_response else 'normal'}\n"
         f"Channel: {chat_name}\n"
         f"Sender: {sender}\n"
         f"Reply-to text, if any: {reply_to_text[:500]}\n"
@@ -654,7 +693,7 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=max(3, _config_int("should_reply_llm_timeout_seconds", 8))) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         parsed = _json_from_text(content)
@@ -678,8 +717,12 @@ def _fallback_should_reply(text: str, event: Any) -> dict[str, Any]:
     route = _ROUTE_INTENT_CACHE.get(text) or _fallback_route_intent(text)
     if route.get("action") != "none":
         return {"reply": True, "confidence": 0.9, "reason": "managed route intent", "source": "fallback"}
-    if _bot_was_mentioned(event) or getattr(event, "reply_to_message_id", None) or _looks_addressed_to_nikechan(text):
+    if _bot_was_mentioned(event) or _is_reply_event(event) or _looks_addressed_to_nikechan(text):
         return {"reply": True, "confidence": 0.85, "reason": "addressed to bot", "source": "fallback"}
+    if re.match(r"^\s*[^\s、。！？!?]{1,24}さん[、,\s]*(?:これ|見て|お願い|どう|なに|何|ありがとう|ごめん)", text):
+        return {"reply": False, "confidence": 0.8, "reason": "addressed to another human", "source": "fallback"}
+    if _is_free_response_channel(event) and re.search(r"(ありがとう|ありがと|助かる|ごめん|すまん|寂しい|悲しい|無視|なんで)", text):
+        return {"reply": True, "confidence": 0.75, "reason": "free-response social cue", "source": "fallback"}
     if re.search(r"[?？]|(教えて|お願い|確認して|見て|できる|できますか|どう|なに|何|なぜ|なんで|いつ|どこ|誰)", text):
         return {"reply": True, "confidence": 0.7, "reason": "direct question/request", "source": "fallback"}
     return {"reply": False, "confidence": 0.6, "reason": "ambient message fallback", "source": "fallback"}
@@ -694,10 +737,18 @@ def _should_reply(event: Any) -> dict[str, Any]:
     route = _ROUTE_INTENT_CACHE.get(text) or _fallback_route_intent(text)
     if route.get("action") != "none":
         return {"reply": True, "confidence": 1.0, "reason": f"managed route: {route.get('action')}", "source": "local"}
-    if _bot_was_mentioned(event) or getattr(event, "reply_to_message_id", None) or _looks_addressed_to_nikechan(text):
+    if _bot_was_mentioned(event) or _is_reply_event(event) or _looks_addressed_to_nikechan(text):
         return {"reply": True, "confidence": 1.0, "reason": "addressed to bot", "source": "local"}
 
-    cache_key = text
+    source = getattr(event, "source", None)
+    cache_key = "|".join(
+        [
+            str(_current_channel(event) or ""),
+            str(getattr(source, "user_id", "") or ""),
+            "reply" if _is_reply_event(event) else "plain",
+            text,
+        ]
+    )
     cached = _SHOULD_REPLY_CACHE.get(cache_key)
     if cached:
         return cached
@@ -705,7 +756,7 @@ def _should_reply(event: Any) -> dict[str, Any]:
     env = _load_env()
     fallback = _fallback_should_reply(text, event)
     llm = _llm_should_reply(text, event, env)
-    if llm and llm.get("confidence", 0.0) >= 0.7:
+    if llm and llm.get("confidence", 0.0) >= _config_float("should_reply_llm_min_confidence", 0.55):
         result = llm
     else:
         result = fallback

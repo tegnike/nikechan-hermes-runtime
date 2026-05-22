@@ -257,6 +257,8 @@ discord:
   should_reply: true
   should_reply_silent_ingest: true
   should_reply_reactions: true
+  should_reply_llm_timeout_seconds: 8
+  should_reply_llm_min_confidence: 0.55
   person_context: true
   person_context_recent_episodes: 3
   person_context_cache_seconds: 300
