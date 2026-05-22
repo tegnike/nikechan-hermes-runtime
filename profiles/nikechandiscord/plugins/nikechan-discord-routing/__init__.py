@@ -805,6 +805,7 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
     if not api_key:
         return None
 
+    started = time.time()
     source = getattr(event, "source", None)
     sender = getattr(source, "user_name", "") or ""
     chat_name = getattr(source, "chat_name", "") or ""
@@ -849,7 +850,7 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.0,
-        "max_tokens": 180,
+        "max_tokens": 80,
     }
     req = urllib.request.Request(
         base_url + "/chat/completions",
@@ -862,8 +863,20 @@ def _llm_should_reply(text: str, event: Any, env: dict[str, str]) -> dict[str, A
             data = json.loads(resp.read().decode("utf-8"))
         content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
         parsed = _json_from_text(content)
+        logger.info(
+            "nikechan-discord-routing should_reply LLM ok: model=%s latency=%.1fs reply=%s confidence=%s",
+            model,
+            time.time() - started,
+            parsed.get("reply"),
+            parsed.get("confidence"),
+        )
     except Exception as exc:
-        logger.warning("nikechan-discord-routing should_reply LLM failed: %s", exc)
+        logger.warning(
+            "nikechan-discord-routing should_reply LLM failed: model=%s latency=%.1fs error=%s",
+            model,
+            time.time() - started,
+            exc,
+        )
         return None
 
     try:
@@ -924,13 +937,6 @@ def _should_reply(event: Any) -> dict[str, Any]:
 
     env = _load_env()
     fallback = _fallback_should_reply(text, event)
-    if fallback.get("reply") and fallback.get("confidence", 0.0) >= 0.7:
-        _SHOULD_REPLY_CACHE[cache_key] = fallback
-        return fallback
-    if not fallback.get("reply") and fallback.get("confidence", 0.0) >= 0.8:
-        _SHOULD_REPLY_CACHE[cache_key] = fallback
-        return fallback
-
     llm = _llm_should_reply(text, event, env)
     if llm and llm.get("confidence", 0.0) >= _config_float("should_reply_llm_min_confidence", 0.55):
         result = llm
